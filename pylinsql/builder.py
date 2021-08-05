@@ -16,6 +16,9 @@ from .ast import *
 from .core import *
 
 _aggregate_functions = Dispatcher([avg, count, max, min, sum])
+_conditional_aggregate_functions = Dispatcher(
+    [avg_if, count_if, max_if, min_if, sum_if]
+)
 _datetime_functions = Dispatcher([year, month, day, hour, minute, second])
 _join_functions = Dispatcher([full_join, inner_join, left_join, right_join])
 _order_functions = Dispatcher([asc, desc])
@@ -248,19 +251,28 @@ class _ConditionExtractor(_QueryExtractor):
     def _(self, call: FunctionCall):
         fn = _aggregate_functions.get(call)
         if fn:
-            if self.aggregation:
-                self.in_aggregation_fn = True
-                args = [self.visit(arg) for arg in call.args]
-                self.in_aggregation_fn = False
+            return self._get_aggregation_func(call)
 
-                return FunctionCall(self.visit(call.base), args)
-        else:
-            if not self.aggregation:
-                return FunctionCall(
-                    self.visit(call.base), [self.visit(arg) for arg in call.args]
-                )
+        fn = _conditional_aggregate_functions.get(call)
+        if fn:
+            return self._get_aggregation_func(call)
+
+        if not self.aggregation:
+            return FunctionCall(
+                self.visit(call.base), [self.visit(arg) for arg in call.args]
+            )
 
         return None
+
+    def _get_aggregation_func(self, call: FunctionCall) -> Optional[FunctionCall]:
+        if self.aggregation:
+            self.in_aggregation_fn = True
+            args = [self.visit(arg) for arg in call.args]
+            self.in_aggregation_fn = False
+
+            return FunctionCall(self.visit(call.base), args)
+        else:
+            return None
 
     @visit.register
     def _(self, attr: AttributeAccess):
@@ -434,7 +446,16 @@ class _QueryVisitor:
         fn = _aggregate_functions.get(call)
         if fn:
             args = ", ".join([self.visit(arg) for arg in call.args])
-            return f"{call.base.name}({args})"
+            func = call.base.name.upper()
+            return f"{func}({args})"
+
+        fn = _conditional_aggregate_functions.get(call)
+        if fn:
+            self.stack.append(TopLevelExpression())
+            expr, cond = [self.visit(arg) for arg in call.args]
+            self.stack.pop()
+            func = call.base.name.replace("_if", "").upper()
+            return f"{func}({expr}) FILTER (WHERE {cond})"
 
         fn = _datetime_functions.get(call)
         if fn:

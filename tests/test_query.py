@@ -6,11 +6,15 @@ from datetime import datetime
 from pylinsql.core import (
     Query,
     asc,
+    count,
+    count_if,
     day,
     desc,
     entity,
     inner_join,
     left_join,
+    max_if,
+    min_if,
     month,
     now,
     p_1,
@@ -118,7 +122,7 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
                 for p in entity(Person)
                 if p.given_name == "John" and min(p.birth_year) >= 1980
             ),
-            "SELECT * FROM Person AS p WHERE p.given_name = 'John' HAVING min(p.birth_year) >= 1980",
+            "SELECT * FROM Person AS p WHERE p.given_name = 'John' HAVING MIN(p.birth_year) >= 1980",
         )
 
     def test_group_by(self):
@@ -128,7 +132,7 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
                 for p, a in entity(Person, Address)
                 if inner_join(p.perm_address_id, a.id) and min(p.birth_year) >= 1980
             ),
-            "SELECT a.city, min(p.birth_year) FROM Person AS p INNER JOIN Address AS a ON p.perm_address_id = a.id GROUP BY a.city HAVING min(p.birth_year) >= 1980",
+            "SELECT a.city, MIN(p.birth_year) FROM Person AS p INNER JOIN Address AS a ON p.perm_address_id = a.id GROUP BY a.city HAVING MIN(p.birth_year) >= 1980",
         )
 
     def test_order_by(self):
@@ -138,6 +142,28 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
                 for p in entity(Person)
             ),
             "SELECT p.family_name, p.given_name, p.birth_date FROM Person AS p ORDER BY p.family_name ASC, p.given_name DESC",
+        )
+
+    def test_aggregate(self):
+        self.assertQueryIs(
+            select(
+                (count(p.birth_date), min(p.birth_date), max(p.birth_date))
+                for p in entity(Person)
+            ),
+            "SELECT COUNT(p.birth_date), MIN(p.birth_date), MAX(p.birth_date) FROM Person AS p",
+        )
+
+    def test_conditional_aggregate(self):
+        self.assertQueryIs(
+            select(
+                (
+                    count_if(p.birth_date, p.given_name != "John"),
+                    min_if(p.birth_date, p.given_name != "John"),
+                    max_if(p.birth_date, p.given_name != "John"),
+                )
+                for p in entity(Person)
+            ),
+            "SELECT COUNT(p.birth_date) FILTER (WHERE p.given_name <> 'John'), MIN(p.birth_date) FILTER (WHERE p.given_name <> 'John'), MAX(p.birth_date) FILTER (WHERE p.given_name <> 'John') FROM Person AS p",
         )
 
     def test_parameterized(self):

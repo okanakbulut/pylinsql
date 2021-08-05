@@ -6,6 +6,7 @@ import dataclasses
 import datetime
 from typing import List, Tuple, Type, TypeVar, Union, overload
 
+B = TypeVar("B")
 T = TypeVar("T")
 T1 = TypeVar("T1")
 T2 = TypeVar("T2")
@@ -140,6 +141,31 @@ def min(_: T) -> T:
 
 def sum(_: T) -> T:
     "Aggregation function: Sum of items in set."
+    ...
+
+
+def avg_if(expression: T, condition: B) -> T:
+    "Conditional aggregation function: AVG(expression) FILTER (WHERE condition)."
+    ...
+
+
+def count_if(expression: T, condition: B) -> T:
+    "Conditional aggregation function: COUNT(expression) FILTER (WHERE condition)."
+    ...
+
+
+def max_if(expression: T, condition: B) -> T:
+    "Conditional aggregation function: MAX(expression) FILTER (WHERE condition)."
+    ...
+
+
+def min_if(expression: T, condition: B) -> T:
+    "Conditional aggregation function: MIN(expression) FILTER (WHERE condition)."
+    ...
+
+
+def sum_if(expression: T, condition: B) -> T:
+    "Conditional aggregation function: SUM(expression) FILTER (WHERE condition)."
     ...
 
 
