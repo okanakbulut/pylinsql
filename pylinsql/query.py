@@ -38,7 +38,15 @@ def _query_builder_args(sql_generator_expr: Generator) -> QueryBuilderArgs:
 
     # analyze expression
     code = CodeExpression(sql_generator_expr)
-    local_vars, conditional_expr, yield_expr = code.get_expression()
+    try:
+        local_vars, conditional_expr, yield_expr = code.get_expression()
+    except AttributeError as e:
+        path = sql_generator_expr.gi_frame.f_code.co_filename
+        lineno = sql_generator_expr.gi_frame.f_code.co_firstlineno
+        raise RuntimeError(
+            f'error parsing expression in file "{path}", line {lineno}'
+        ) from e
+
     context = Context(local_vars, closure_vars)
     source_arg = code.argument
 

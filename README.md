@@ -91,10 +91,10 @@ select(
 )
 ```
 ```sql
-SELECT a.city, min(p.birth_year)
+SELECT a.city, MIN(p.birth_year)
 FROM Person AS p INNER JOIN Address AS a ON p.perm_address_id = a.id
 GROUP BY a.city
-HAVING min(p.birth_year) >= 1980
+HAVING MIN(p.birth_year) >= 1980
 ```
 
 

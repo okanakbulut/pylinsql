@@ -122,11 +122,20 @@ class _Disassembler:
     BINARY_XOR = lambda self, _: self._binary_op(BitwiseXor)
     BINARY_OR = lambda self, _: self._binary_op(BitwiseOr)
 
-    def COMPARE_OP(self, opname):
-        op = dis.cmp_op[opname]
+    def _compare_op(self, op: str, invert: bool):
         right = self.stack.pop()
         left = self.stack.pop()
-        self.stack.append(Comparison(op, left, right))
+        comp = Comparison(op, left, right)
+        if invert:
+            self.stack.append(comp.negate())
+        else:
+            self.stack.append(comp)
+
+    COMPARE_OP = lambda self, opname: self._compare_op(dis.cmp_op[opname], False)
+
+    # new in version 3.9
+    CONTAINS_OP = lambda self, invert: self._compare_op("in", invert)
+    IS_OP = lambda self, invert: self._compare_op("is", invert)
 
     def JUMP_ABSOLUTE(self, target):
         pass
