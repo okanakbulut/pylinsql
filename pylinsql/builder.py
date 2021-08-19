@@ -593,7 +593,7 @@ class QueryBuilder:
 
         # construct JOIN expression "a JOIN b ON a.foreign_key = b.primary_key JOIN ..."
         entity_aliases = {
-            var: f"{typ.__name__} AS {var}"
+            var: f'"{typ.__name__}" AS {var}'
             for typ, var in zip(qba.source.types, qba.context.local_vars)
         }
         remaining_entities = qba.context.local_vars.copy()
@@ -676,7 +676,7 @@ class QueryBuilder:
             raise TypeError(
                 f"object to insert has wrong type: {type(insert_obj)}, expected: {entity_type}"
             )
-        sql_from = f"{entity_type.__name__} AS {entity_var}"
+        sql_from = f'"{entity_type.__name__}" AS {entity_var}'
 
         # construct WHERE expression
         where_expr = _ConditionExtractor(

@@ -4,7 +4,8 @@ Construct a SQL query from a Python expression.
 
 import dataclasses
 import datetime
-from typing import List, Tuple, Type, TypeVar, Union, overload
+from typing import Dict, List, Tuple, Type, TypeVar, Union, overload
+from typing_extensions import Protocol
 
 B = TypeVar("B")
 T = TypeVar("T")
@@ -68,6 +69,12 @@ def entity(
     ...
 
 
+class DataclassType(Protocol):
+    "Identifies a type as a dataclass type."
+
+    __dataclass_fields__: Dict
+
+
 def is_dataclass_type(typ):
     "True if the argument corresponds to a data class type (but not an instance)."
 
@@ -80,7 +87,13 @@ def is_dataclass_instance(obj):
     return not isinstance(obj, type) and dataclasses.is_dataclass(obj)
 
 
-def entity(*cls) -> List:
+def is_primitive_type(typ):
+    "True if the argument corresponds to a primitive data type such as bool, int or str."
+
+    return isinstance(typ, (bool, int, str))
+
+
+def entity(*cls: DataclassType) -> List:
     "Represents the list of entities (a.k.a. tables in SQL) to query from."
 
     if not all(is_dataclass_type(typ) for typ in cls):

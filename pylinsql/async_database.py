@@ -1,13 +1,14 @@
+from __future__ import annotations
 import contextvars
 import dataclasses
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Generator, List, Tuple, Type, TypeVar, Union
+from typing import Any, AsyncIterator, Generator, List, Tuple, Type, TypeVar, Union
 
 import asyncpg
 
-from pylinsql.core import DEFAULT, is_dataclass_type
+from pylinsql.core import DEFAULT, DataclassType, is_dataclass_type
 from pylinsql.query import insert_or_select, select
 
 T = TypeVar("T")
@@ -45,7 +46,7 @@ class DatabasePool:
         self.pool = pool
 
     @asynccontextmanager
-    async def connection(self):
+    async def connection(self) -> AsyncIterator[DatabaseConnection]:
         conn = await self.pool.acquire()
         try:
             yield DatabaseConnection(conn)
@@ -58,7 +59,9 @@ async def _create_pool(params: DatabaseConnectionParameters) -> asyncpg.Pool:
 
 
 @asynccontextmanager
-async def pool(params: DatabaseConnectionParameters = None) -> DatabasePool:
+async def pool(
+    params: DatabaseConnectionParameters = None,
+) -> AsyncIterator[DatabasePool]:
     if params is None:
         params = DatabaseConnectionParameters()
     pool = await _create_pool(params)
@@ -137,16 +140,24 @@ class DatabaseClient:
         stmt = await self.conn.prepare(query)
         await stmt.execute(values)
 
-    async def typed_fetch(self, typ: Type, query: str, *args) -> List:
+    async def typed_fetch(self, typ: DataclassType, query: str, *args) -> List:
         """Maps all columns of a database record to a Python data class."""
 
         if not is_dataclass_type(typ):
             raise TypeError(f"{typ} must be a dataclass type")
 
         records = await self.conn.fetch(query, *args)
-        return await self._typed_fetch(typ, records)
+        return self._typed_fetch(typ, records)
 
-    async def _typed_fetch(self, typ: Type, records: List[asyncpg.Record]):
+    async def typed_fetch_column(
+        self, typ: Type, query: str, *args, column: int = 0
+    ) -> List:
+        """Maps a single column of a database record to a Python class."""
+
+        records = await self.conn.fetch(query, *args)
+        return [record[column] for record in records]
+
+    def _typed_fetch(self, typ: DataclassType, records: List[asyncpg.Record]):
         results = []
         for record in records:
             result = object.__new__(typ)
@@ -183,12 +194,18 @@ class DatabaseClient:
         return await self.conn.fetchval(query, *args, column=column, timeout=timeout)
 
 
+class DatabaseTransaction(DatabaseClient):
+    def __init__(self, conn, transaction):
+        super().__init__(conn)
+        self.transaction = transaction
+
+
 class DatabaseConnection(DatabaseClient):
     def __init__(self, conn):
         super().__init__(conn)
 
     @asynccontextmanager
-    async def transaction(self):
+    async def transaction(self) -> AsyncIterator[DatabaseTransaction]:
         transaction = self.conn.transaction()
         await transaction.start()
         try:
@@ -201,7 +218,9 @@ class DatabaseConnection(DatabaseClient):
 
 
 @asynccontextmanager
-async def connection(params: DatabaseConnectionParameters = None) -> DatabaseConnection:
+async def connection(
+    params: DatabaseConnectionParameters = None,
+) -> AsyncIterator[DatabaseConnection]:
     if params is None:
         params = DatabaseConnectionParameters()
     conn = await asyncpg.connect(**params.as_dict())
@@ -209,12 +228,6 @@ async def connection(params: DatabaseConnectionParameters = None) -> DatabaseCon
         yield DatabaseConnection(conn)
     finally:
         await conn.close()
-
-
-class DatabaseTransaction(DatabaseClient):
-    def __init__(self, conn, transaction):
-        super().__init__(conn)
-        self.transaction = transaction
 
 
 _pool_var = contextvars.ContextVar("pool")
@@ -236,7 +249,7 @@ class DataAccess:
         return pool
 
     @asynccontextmanager
-    async def get_connection(self) -> DatabaseConnection:
+    async def get_connection(self) -> AsyncIterator[DatabaseConnection]:
         pool = await self._get_pool()
         async with pool.connection() as connection:
             yield connection

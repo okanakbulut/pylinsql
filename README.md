@@ -15,7 +15,7 @@ select(
 and transform it into a SQL query such as
 ```sql
 SELECT p.given_name
-FROM Person AS p INNER JOIN Address AS a ON p.address_id = a.id
+FROM "Person" AS p INNER JOIN "Address" AS a ON p.address_id = a.id
 WHERE p.given_name = 'John' AND p.family_name <> 'Doe' OR a.city <> 'London'
 ORDER BY p.given_name ASC
 ```
@@ -38,7 +38,7 @@ select((p.family_name, p.given_name) for p in entity(Person))
 ```
 ```sql
 SELECT p.family_name, p.given_name
-FROM Person AS p
+FROM "Person" AS p
 ```
 
 If you have an entity variable preceding `for`, it will expand into all properties of that entity:
@@ -47,7 +47,7 @@ select(p for p in entity(Person))
 ```
 ```sql
 SELECT *
-FROM Person AS p
+FROM "Person" AS p
 ```
 
 Boolean expressions in the condition part of a Python generator expression (i.e. following `if`) normally go into the `WHERE` clause:
@@ -62,7 +62,7 @@ select(
 ```
 ```sql
 SELECT *
-FROM Person AS p
+FROM "Person" AS p
 WHERE p.given_name = 'John' AND p.family_name <> 'Doe' OR 2021 - p.birth_year >= 18
 ```
 
@@ -77,9 +77,9 @@ select(
 ```
 ```sql
 SELECT *
-FROM Person AS p
-    INNER JOIN Address AS a1 ON p.perm_address_id = a1.id
-    LEFT JOIN Address AS a2 ON p.temp_address_id = a2.id
+FROM "Person" AS p
+    INNER JOIN "Address" AS a1 ON p.perm_address_id = a1.id
+    LEFT JOIN "Address" AS a2 ON p.temp_address_id = a2.id
 ```
 
 You can also use aggregation functions. Expressions that are not aggregated automatically go into the `GROUP BY` clause. If you have a condition that involves an aggregated expression, it becomes part of the `HAVING` clause.
@@ -92,7 +92,7 @@ select(
 ```
 ```sql
 SELECT a.city, MIN(p.birth_year)
-FROM Person AS p INNER JOIN Address AS a ON p.perm_address_id = a.id
+FROM "Person" AS p INNER JOIN "Address" AS a ON p.perm_address_id = a.id
 GROUP BY a.city
 HAVING MIN(p.birth_year) >= 1980
 ```
