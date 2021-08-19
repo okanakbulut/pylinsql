@@ -69,7 +69,7 @@ def entity(
     ...
 
 
-class DataclassType(Protocol):
+class Dataclass(Protocol):
     "Identifies a type as a dataclass type."
 
     __dataclass_fields__: Dict
@@ -93,7 +93,7 @@ def is_primitive_type(typ):
     return isinstance(typ, (bool, int, str))
 
 
-def entity(*cls: DataclassType) -> List:
+def entity(*cls: Dataclass) -> List:
     "Represents the list of entities (a.k.a. tables in SQL) to query from."
 
     if not all(is_dataclass_type(typ) for typ in cls):
