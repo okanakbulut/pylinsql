@@ -1,21 +1,36 @@
 from __future__ import annotations
+
+import asyncio
 import contextvars
 import dataclasses
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Generator, List, Tuple, Type, TypeVar, Union
+from typing import (
+    Any,
+    AsyncIterator,
+    Dict,
+    Generator,
+    Generic,
+    Iterable,
+    List,
+    Optional,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+)
 
 import asyncpg
 
-from pylinsql.core import DEFAULT, Dataclass, is_dataclass_type
+from pylinsql.core import DEFAULT, is_dataclass_type
 from pylinsql.query import insert_or_select, select
 
 T = TypeVar("T")
 
 
-@dataclasses.dataclass
-class DatabaseConnectionParameters:
+@dataclasses.dataclass(frozen=True)
+class ConnectionParameters:
     user: str = None
     password: str = None
     database: str = None
@@ -24,16 +39,22 @@ class DatabaseConnectionParameters:
     command_timeout: int = 60
 
     def __post_init__(self):
+        # use object.__setattr__ to avoid dataclasses.FrozenInstanceError
         if self.user is None:
-            self.user = os.getenv("PSQL_USERNAME", "postgres")
+            user = os.getenv("PSQL_USERNAME", "postgres")
+            object.__setattr__(self, "user", user)
         if self.password is None:
-            self.password = os.getenv("PSQL_PASSWORD", "")
+            password = os.getenv("PSQL_PASSWORD", "")
+            object.__setattr__(self, "password", password)
         if self.database is None:
-            self.database = os.getenv("PSQL_DATABASE", "postgres")
+            database = os.getenv("PSQL_DATABASE", "postgres")
+            object.__setattr__(self, "database", database)
         if self.host is None:
-            self.host = os.getenv("PSQL_HOSTNAME", "localhost")
+            host = os.getenv("PSQL_HOSTNAME", "localhost")
+            object.__setattr__(self, "host", host)
         if self.port is None:
-            self.port = int(os.getenv("PSQL_PORT", "5432"))
+            port = int(os.getenv("PSQL_PORT", "5432"))
+            object.__setattr__(self, "port", port)
 
     def as_dict(self):
         return dataclasses.asdict(self)
@@ -53,25 +74,31 @@ class DatabasePool:
         finally:
             await self.pool.release(conn)
 
+    async def release(self):
+        return await self.pool.close()
 
-async def _create_pool(params: DatabaseConnectionParameters) -> asyncpg.Pool:
+
+async def _create_pool(params: ConnectionParameters) -> asyncpg.Pool:
     return await asyncpg.create_pool(**params.as_dict())
 
 
 @asynccontextmanager
 async def pool(
-    params: DatabaseConnectionParameters = None,
+    params: ConnectionParameters = None,
 ) -> AsyncIterator[DatabasePool]:
     if params is None:
-        params = DatabaseConnectionParameters()
+        params = ConnectionParameters()
     pool = await _create_pool(params)
     try:
         yield DatabasePool(pool)
     finally:
+        await pool.close()
         pool.terminate()
 
 
 class DatabaseClient:
+    conn: asyncpg.Connection
+
     def __init__(self, conn):
         self.conn = conn
 
@@ -123,7 +150,7 @@ class DatabaseClient:
         logging.debug("executing query: %s", query)
         return self._unwrap(await stmt.fetchrow(*fetch_args))
 
-    async def insert_or_ignore(self, insert_obj: T):
+    async def insert_or_ignore(self, insert_obj: T) -> None:
         table_name = type(insert_obj)
         fields = dataclasses.fields(insert_obj)
         column_list = ", ".join(field.name for field in fields)
@@ -157,7 +184,7 @@ class DatabaseClient:
         records = await self.conn.fetch(query, *args)
         return [record[column] for record in records]
 
-    def _typed_fetch(self, typ: Type, records: List[asyncpg.Record]):
+    def _typed_fetch(self, typ: Type, records: List[asyncpg.Record]) -> List:
         results = []
         for record in records:
             result = object.__new__(typ)
@@ -189,9 +216,20 @@ class DatabaseClient:
             query, *args, timeout=timeout, record_class=record_class
         )
 
-    async def raw_fetchval(self, query: str, *args, column=0, timeout=None) -> Any:
-
+    async def raw_fetchval(
+        self, query: str, *args, column: int = 0, timeout: Optional[float] = None
+    ) -> Any:
         return await self.conn.fetchval(query, *args, column=column, timeout=timeout)
+
+    async def raw_execute(
+        self, query: str, *args, timeout: Optional[float] = None
+    ) -> str:
+        return await self.conn.execute(query, *args, timeout=timeout)
+
+    async def raw_executemany(
+        self, command: str, args: Iterable, timeout: Optional[float] = None
+    ) -> None:
+        return await self.conn.executemany(command, args, timeout=timeout)
 
 
 class DatabaseTransaction(DatabaseClient):
@@ -219,10 +257,10 @@ class DatabaseConnection(DatabaseClient):
 
 @asynccontextmanager
 async def connection(
-    params: DatabaseConnectionParameters = None,
+    params: ConnectionParameters = None,
 ) -> AsyncIterator[DatabaseConnection]:
     if params is None:
-        params = DatabaseConnectionParameters()
+        params = ConnectionParameters()
     conn = await asyncpg.connect(**params.as_dict())
     try:
         yield DatabaseConnection(conn)
@@ -230,26 +268,36 @@ async def connection(
         await conn.close()
 
 
-_pool_var = contextvars.ContextVar("pool")
+_connection_pools = contextvars.ContextVar("pool")
+
+
+async def shared_pool(params: ConnectionParameters = None) -> DatabasePool:
+    "A database connection pool shared across coroutines in the asynchronous execution context."
+
+    if params is None:
+        params = ConnectionParameters()
+
+    pools: Dict[ConnectionParameters, DatabasePool] = _connection_pools.get(None)
+    if pools is None:
+        pools = {}
+        _connection_pools.set(pools)
+
+    pool: DatabasePool = pools.get(params, None)
+    if pool is None:
+        pool = DatabasePool(await _create_pool(params))
+        pools[params] = pool
+
+    return pool
 
 
 class DataAccess:
-    params: DatabaseConnectionParameters
+    params: ConnectionParameters
 
-    def __init__(self, params: DatabaseConnectionParameters = None):
-        if params is None:
-            params = DatabaseConnectionParameters()
-        self.params = params
-
-    async def _get_pool(self) -> DatabasePool:
-        pool = _pool_var.get(None)
-        if not pool:
-            pool = DatabasePool(await _create_pool(self.params))
-            _pool_var.set(pool)
-        return pool
+    def __init__(self, params: ConnectionParameters = None):
+        self.params = ConnectionParameters() if params is None else params
 
     @asynccontextmanager
     async def get_connection(self) -> AsyncIterator[DatabaseConnection]:
-        pool = await self._get_pool()
+        pool = await shared_pool(self.params)
         async with pool.connection() as connection:
             yield connection

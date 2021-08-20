@@ -1,6 +1,6 @@
 import unittest
 
-from pylinsql.async_database import DatabaseConnectionParameters, connection
+from pylinsql.async_database import ConnectionParameters, connection
 from pylinsql.code_generator import (
     catalog_to_dataclasses,
     dataclasses_to_code,
@@ -16,7 +16,7 @@ class TestCodeGenerator(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(obj)
 
     async def test_generator(self):
-        async with connection(DatabaseConnectionParameters()) as conn:
+        async with connection(ConnectionParameters()) as conn:
             catalog = await get_catalog_schema(conn, "public")
             self.assertNotEmpty(catalog.tables)
             table_names = [table.name for table in catalog.tables]
