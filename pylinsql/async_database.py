@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import contextvars
 import dataclasses
 import logging
@@ -11,7 +10,6 @@ from typing import (
     AsyncIterator,
     Dict,
     Generator,
-    Generic,
     Iterable,
     List,
     Optional,
@@ -23,6 +21,7 @@ from typing import (
 
 import asyncpg
 
+from pylinsql.base import optional_cast
 from pylinsql.core import DEFAULT, is_dataclass_type
 from pylinsql.query import insert_or_select, select
 
@@ -167,7 +166,7 @@ class DatabaseClient:
         stmt = await self.conn.prepare(query)
         await stmt.execute(values)
 
-    async def typed_fetch(self, typ: Type, query: str, *args) -> List:
+    async def typed_fetch(self, typ: Type[T], query: str, *args) -> List[T]:
         """Maps all columns of a database record to a Python data class."""
 
         if not is_dataclass_type(typ):
@@ -177,14 +176,20 @@ class DatabaseClient:
         return self._typed_fetch(typ, records)
 
     async def typed_fetch_column(
-        self, typ: Type, query: str, *args, column: int = 0
-    ) -> List:
+        self, typ: Type[T], query: str, *args, column: int = 0
+    ) -> List[T]:
         """Maps a single column of a database record to a Python class."""
 
         records = await self.conn.fetch(query, *args)
-        return [record[column] for record in records]
+        return [optional_cast(typ, record[column]) for record in records]
 
-    def _typed_fetch(self, typ: Type, records: List[asyncpg.Record]) -> List:
+    async def typed_fetch_value(
+        self, typ: Type[T], query: str, *args, column: int = 0
+    ) -> T:
+        value = await self.conn.fetchval(query, *args, column=column)
+        return optional_cast(typ, value)
+
+    def _typed_fetch(self, typ: Type[T], records: List[asyncpg.Record]) -> List[T]:
         results = []
         for record in records:
             result = object.__new__(typ)

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import inspect
 import sys
-from typing import Any, Generator, List, Type
+from typing import Generator, List, Type
 
 from .builder import Context, QueryBuilder, QueryBuilderArgs
 from .core import Query, EntityProxy
