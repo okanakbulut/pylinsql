@@ -309,3 +309,38 @@ def dataclasses_to_code(types: List[DataClass]) -> str:
     f = io.StringIO()
     dataclasses_to_stream(types, f)
     return f.getvalue()
+
+
+async def main(output_path: str, db_schema: str) -> None:
+    async with async_database.connection(ConnectionParameters()) as conn:
+        catalog = await get_catalog_schema(conn, db_schema)
+
+    if not catalog:
+        raise RuntimeError(f'catalog schema "{db_schema}" is empty')
+
+    types = catalog_to_dataclasses(catalog)
+    code = dataclasses_to_code(types)
+    with open(output_path, "w") as f:
+        f.write(code)
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Generate Python data classes from a PostgreSQL database schema",
+        epilog="""
+            Use environment variables PSQL_USERNAME, PSQL_PASSWORD, PSQL_DATABASE, PSQL_HOSTNAME and PSQL_PORT
+            to set PostgreSQL connection parameters.
+        """,
+    )
+    parser.add_argument(
+        "output", help="Python source file to write generated data classes to"
+    )
+    parser.add_argument("--schema", default="public", help="database schema to export")
+    args = parser.parse_args()
+    try:
+        asyncio.run(main(args.output, args.schema))
+    except Exception as e:
+        print(f"error: {e}")
+        sys.exit(1)

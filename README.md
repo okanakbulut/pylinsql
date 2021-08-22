@@ -97,6 +97,49 @@ GROUP BY a.city
 HAVING MIN(p.birth_year) >= 1980
 ```
 
+## Code generator for data classes
+
+*pylinsql* depends on Python data classes for its language-integrated query mechanism. For example, in order to execute
+```python
+select(
+    asc(p.given_name)
+    for p, a in entity(Person, Address)
+    if inner_join(p.address_id, a.id)
+    and (
+        (p.given_name == "John" and p.family_name != "Doe")
+        or (a.city != "London")
+    )
+)
+```
+one has to define data classes corresponding to entities `Address` and `Person`:
+```python
+@dataclass
+class Address:
+    id: int
+    city: str
+
+@dataclass
+class Person:
+    id: int
+    family_name: str
+    given_name: str
+    birth_date: datetime
+    perm_address_id: int = field(...)
+    temp_address_id: Optional[int] = field(...)
+```
+
+Defining these classes manually would be tedious work. Fortunately, *pylinsql* comes with a code generator utility that scans table schema definitions in a database, and writes corresponding Python code:
+```shell
+$ python3 -m pylinsql.code_generator example.py --schema public
+```
+
+The generated code takes into account type mappings, nullable types, table references and even table and column comments.
+
+Use the switch `--help` to learn more:
+```shell
+$ python3 -m pylinsql.code_generator --help
+```
+
 
 ## Background and related work
 
