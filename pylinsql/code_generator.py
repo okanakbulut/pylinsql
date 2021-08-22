@@ -1,12 +1,15 @@
+import asyncio
 import dataclasses
 import datetime
 import io
 import keyword
+import sys
 import typing
 from dataclasses import Field, dataclass
 from typing import Any, Dict, List, Optional, TextIO, Tuple, Type, TypeVar, Union
 
-from .async_database import DatabaseClient
+from . import async_database
+from .async_database import ConnectionParameters, DatabaseClient
 from .base import optional_cast
 from .core import DataClass
 from .schema import ForeignKey, Reference
@@ -66,6 +69,9 @@ class CatalogSchema:
 
     name: str
     tables: Dict[str, TableSchema]
+
+    def __bool__(self) -> bool:
+        return bool(self.tables)
 
 
 async def get_table_schema(

@@ -30,30 +30,24 @@ T = TypeVar("T")
 
 @dataclasses.dataclass(frozen=True)
 class ConnectionParameters:
-    user: str = None
-    password: str = None
-    database: str = None
-    host: str = None
-    port: int = None
-    command_timeout: int = 60
+    "Encapsulates database connection parameters."
 
-    def __post_init__(self):
-        # use object.__setattr__ to avoid dataclasses.FrozenInstanceError
-        if self.user is None:
-            user = os.getenv("PSQL_USERNAME", "postgres")
-            object.__setattr__(self, "user", user)
-        if self.password is None:
-            password = os.getenv("PSQL_PASSWORD", "")
-            object.__setattr__(self, "password", password)
-        if self.database is None:
-            database = os.getenv("PSQL_DATABASE", "postgres")
-            object.__setattr__(self, "database", database)
-        if self.host is None:
-            host = os.getenv("PSQL_HOSTNAME", "localhost")
-            object.__setattr__(self, "host", host)
-        if self.port is None:
-            port = int(os.getenv("PSQL_PORT", "5432"))
-            object.__setattr__(self, "port", port)
+    user: str = dataclasses.field(
+        default_factory=lambda: os.getenv("PSQL_USERNAME", "postgres")
+    )
+    password: str = dataclasses.field(
+        default_factory=lambda: os.getenv("PSQL_PASSWORD", "")
+    )
+    database: str = dataclasses.field(
+        default_factory=lambda: os.getenv("PSQL_DATABASE", "postgres")
+    )
+    host: str = dataclasses.field(
+        default_factory=lambda: os.getenv("PSQL_HOSTNAME", "localhost")
+    )
+    port: int = dataclasses.field(
+        default_factory=lambda: int(os.getenv("PSQL_PORT", "5432"))
+    )
+    command_timeout: int = 60
 
     def as_dict(self):
         return dataclasses.asdict(self)

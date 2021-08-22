@@ -1,3 +1,4 @@
+from typing import Generator
 import unittest
 
 from pylinsql.core import (
@@ -17,7 +18,7 @@ from pylinsql.core import (
     p_1,
     year,
 )
-from pylinsql.query import insert_or_select, select
+from pylinsql.query import cache_info, insert_or_select, select
 
 from .database import Address, Person
 
@@ -26,17 +27,21 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
     def assertQueryIs(self, query_expr: Query, sql_string: str):
         self.assertEqual(query_expr.sql, sql_string)
 
+    def get_example_expr(self) -> Generator:
+        expr = (
+            asc(p.given_name)
+            for p, a in entity(Person, Address)
+            if inner_join(p.address_id, a.id)
+            and (
+                (p.given_name == "John" and p.family_name != "Doe")
+                or (a.city != "London")
+            )
+        )
+        return expr
+
     def test_example(self):
         self.assertQueryIs(
-            select(
-                asc(p.given_name)
-                for p, a in entity(Person, Address)
-                if inner_join(p.address_id, a.id)
-                and (
-                    (p.given_name == "John" and p.family_name != "Doe")
-                    or (a.city != "London")
-                )
-            ),
+            select(self.get_example_expr()),
             """SELECT p.given_name FROM "Person" AS p INNER JOIN "Address" AS a ON p.address_id = a.id WHERE p.given_name = 'John' AND p.family_name <> 'Doe' OR a.city <> 'London' ORDER BY p.given_name ASC""",
         )
 
@@ -181,17 +186,17 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
         )
 
     def test_expression_cache(self):
-        expr = (
-            asc(p.given_name)
-            for p, a in entity(Person, Address)
-            if inner_join(p.address_id, a.id)
-            and (
-                (p.given_name == "John" and p.family_name != "Doe")
-                or (a.city != "London")
-            )
-        )
-        query1 = select(expr).sql
-        query2 = select(expr).sql
+        # make sure the expression is in the cache
+        query1 = select(self.get_example_expr()).sql
+        cache1 = cache_info()
+
+        # verify additional queries with the same expression cause hits, not misses
+        query2 = select(self.get_example_expr()).sql
+        cache2 = cache_info()
+        self.assertEqual(cache1.hits + 1, cache2.hits)
+        self.assertEqual(cache1.misses, cache2.misses)
+
+        # verify query string is the same
         self.assertEqual(query1, query2)
 
 

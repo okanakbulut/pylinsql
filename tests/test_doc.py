@@ -35,6 +35,7 @@ class TestDocumentation(unittest.TestCase):
         )
 
         with open(os.path.join("README.md"), "r") as f:
+            count = 0
             text = f.read()
             for m in regexp.finditer(text):
                 matches = m.groupdict()
@@ -42,6 +43,10 @@ class TestDocumentation(unittest.TestCase):
                 expr = eval(matches["python"])
                 sql = collapse_whitespace(matches["sql"])
                 self.assertQueryIs(expr, sql)
+
+                count += 1
+
+            self.assertGreater(count, 0)
 
 
 if __name__ == "__main__":

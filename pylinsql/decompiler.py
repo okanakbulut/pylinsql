@@ -189,22 +189,12 @@ class CodeExpression:
 
 
 class CodeExpressionAnalyzer:
-    obj: Union[Callable, Generator]
-    codeobject: CodeType
+    code_object: CodeType
     instructions: List[dis.Instruction]
 
-    def __init__(self, obj: Any):
-        self.obj = obj
-        if inspect.isgenerator(obj):
-            self.codeobject = obj.gi_frame.f_code
-        elif is_lambda(obj):
-            self.codeobject = obj.__code__
-        else:
-            raise TypeError(
-                "code object must be a generator or a Boolean lambda function"
-            )
-
-        self.instructions = list(dis.Bytecode(self.codeobject))
+    def __init__(self, code_object: CodeType):
+        self.code_object = code_object
+        self.instructions = list(dis.Bytecode(self.code_object))
 
     @staticmethod
     def _is_jump_instruction(instruction: dis.Instruction) -> bool:
@@ -234,7 +224,7 @@ class CodeExpressionAnalyzer:
 
     def _get_abstract_nodes(self) -> Tuple[List[str], List[_AbstractNode]]:
         blocks = self._get_basic_blocks()
-        disassembler = _Disassembler(self.codeobject)
+        disassembler = _Disassembler(self.code_object)
 
         node_by_offset = {}
         for index, block in enumerate(blocks):
@@ -262,14 +252,13 @@ class CodeExpressionAnalyzer:
 
         nodes = [item[0] for item in node_by_offset.values()]
 
-        if inspect.isgenerator(self.obj):
-            # remove prolog and epilog from generator
-            # prolog pushes the single iterable argument (a.k.a. ".0") to the stack that a generator expression receives:
-            #       0 LOAD_FAST                0 (.0)
-            # epilog pops the stack and returns None to indicate end of iteration
-            # >>   48 LOAD_CONST               4 (None)
-            #      50 RETURN_VALUE
-            nodes = nodes[1:-1]
+        # remove prolog and epilog from generator
+        # prolog pushes the single iterable argument (a.k.a. ".0") to the stack that a generator expression receives:
+        #       0 LOAD_FAST                0 (.0)
+        # epilog pops the stack and returns None to indicate end of iteration
+        # >>   48 LOAD_CONST               4 (None)
+        #      50 RETURN_VALUE
+        nodes = nodes[1:-1]
 
         return disassembler.variables, nodes
 
@@ -369,9 +358,6 @@ class CodeExpressionAnalyzer:
 
     def get_expression(self) -> CodeExpression:
         variables, nodes = self._get_abstract_nodes()
-
-        if not inspect.isgenerator(self.obj):
-            raise ValueError("code object must be a generator expression")
 
         cond_expr = self._get_condition(nodes) if len(nodes) > 2 else None
         yield_expr = nodes[-1].expr

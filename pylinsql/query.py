@@ -3,10 +3,12 @@ Construct a SQL query from a Python expression.
 """
 
 from __future__ import annotations
+from dataclasses import dataclass
 
 import functools
 import inspect
 import sys
+from types import CodeType
 from typing import Generator, List, Type
 
 from .builder import Context, QueryBuilder, QueryBuilderArgs
@@ -28,16 +30,27 @@ def get_entity_types(sql_generator_expr: Generator) -> List[Type]:
 
 
 @functools.lru_cache
-def _analyze_expression(sql_generator_expr: Generator) -> CodeExpression:
-    code_analyzer = CodeExpressionAnalyzer(sql_generator_expr)
+def _analyze_expression(code_object: CodeType) -> CodeExpression:
+    code_analyzer = CodeExpressionAnalyzer(code_object)
     try:
         return code_analyzer.get_expression()
     except AttributeError as e:
-        path = sql_generator_expr.gi_frame.f_code.co_filename
-        lineno = sql_generator_expr.gi_frame.f_code.co_firstlineno
+        path = code_object.co_filename
+        lineno = code_object.co_firstlineno
         raise RuntimeError(
             f'error parsing expression in file "{path}", line {lineno}'
         ) from e
+
+
+@dataclass
+class CacheInfo:
+    hits: int
+    misses: int
+
+
+def cache_info() -> CacheInfo:
+    info = _analyze_expression.cache_info()
+    return CacheInfo(info.hits, info.misses)
 
 
 def _query_builder_args(sql_generator_expr: Generator) -> QueryBuilderArgs:
@@ -47,7 +60,7 @@ def _query_builder_args(sql_generator_expr: Generator) -> QueryBuilderArgs:
         )
 
     # obtain AST representation of generator expression
-    code_expression = _analyze_expression(sql_generator_expr)
+    code_expression = _analyze_expression(sql_generator_expr.gi_frame.f_code)
 
     # get reference to caller's frame
     caller = sys._getframe(2)
@@ -67,6 +80,8 @@ def _query_builder_args(sql_generator_expr: Generator) -> QueryBuilderArgs:
 
 
 def select(sql_generator_expr: Generator) -> Query:
+    "Builds a query expression corresponding to a SELECT SQL statement."
+
     qba = _query_builder_args(sql_generator_expr)
     builder = QueryBuilder()
     sql = builder.select(qba)
@@ -74,6 +89,8 @@ def select(sql_generator_expr: Generator) -> Query:
 
 
 def insert_or_select(insert_obj: T, sql_generator_expr: Generator) -> Query:
+    "Builds a query expression corresponding to a combined SELECT or INSERT SQL statement."
+
     qba = _query_builder_args(sql_generator_expr)
     builder = QueryBuilder()
     sql = builder.insert_or_select(qba, insert_obj)

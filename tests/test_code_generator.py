@@ -25,8 +25,6 @@ class TestCodeGenerator(unittest.IsolatedAsyncioTestCase):
             self.assertNotEmpty(types)
             code = dataclasses_to_code(types)
             self.assertNotEmpty(code)
-            with open("example-schema.py", "w") as f:
-                f.write(code)
 
 
 if __name__ == "__main__":
