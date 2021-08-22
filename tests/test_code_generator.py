@@ -19,13 +19,14 @@ class TestCodeGenerator(unittest.IsolatedAsyncioTestCase):
         async with connection(ConnectionParameters()) as conn:
             catalog = await get_catalog_schema(conn, "public")
             self.assertNotEmpty(catalog.tables)
-            table_names = [table.name for table in catalog.tables]
-            self.assertIn("Address", table_names)
-            self.assertIn("Person", table_names)
+            self.assertIn("Address", catalog.tables)
+            self.assertIn("Person", catalog.tables)
             types = catalog_to_dataclasses(catalog)
             self.assertNotEmpty(types)
             code = dataclasses_to_code(types)
             self.assertNotEmpty(code)
+            with open("example-schema.py", "w") as f:
+                f.write(code)
 
 
 if __name__ == "__main__":

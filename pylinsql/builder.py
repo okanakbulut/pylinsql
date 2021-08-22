@@ -652,7 +652,7 @@ class QueryBuilder:
             sql_parts.extend(["ORDER BY", ", ".join(sql_order)])
         return " ".join(sql_parts)
 
-    def insert_or_select(self, qba: QueryBuilderArgs, insert_obj: Dataclass) -> str:
+    def insert_or_select(self, qba: QueryBuilderArgs, insert_obj: DataClass) -> str:
         if not is_dataclass_instance(insert_obj):
             raise TypeError(f"{insert_obj} must be a dataclass instance")
 

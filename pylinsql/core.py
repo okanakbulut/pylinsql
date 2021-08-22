@@ -5,7 +5,7 @@ Construct a SQL query from a Python expression.
 import datetime
 from typing import Dict, List, Tuple, Type, TypeVar, Union, overload
 
-from .base import Dataclass, is_dataclass_type
+from .base import DataClass, is_dataclass_type
 
 B = TypeVar("B")
 T = TypeVar("T")
@@ -75,7 +75,7 @@ def is_primitive_type(typ):
     return isinstance(typ, (bool, int, str))
 
 
-def entity(*cls: Dataclass) -> List:
+def entity(*cls: DataClass) -> List:
     "Represents the list of entities (a.k.a. tables in SQL) to query from."
 
     if not all(is_dataclass_type(typ) for typ in cls):

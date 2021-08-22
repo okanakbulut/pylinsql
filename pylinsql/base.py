@@ -20,7 +20,7 @@ def optional_cast(typ: Type[T], value: Optional[Any]) -> Optional[T]:
         return typ(value)
 
 
-class Dataclass(Protocol):
+class DataClass(Protocol):
     "Identifies a type as a dataclass type."
 
     __dataclass_fields__: Dict
