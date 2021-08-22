@@ -167,13 +167,13 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
                 and month(p.birth_date) > 6
                 and day(p.birth_date) <= 15
             ),
-            'SELECT * FROM "Person" AS p WHERE EXTRACT(YEAR FROM p.birth_date) >= 1980 AND EXTRACT(MONTH FROM p.birth_date) > 6 AND EXTRACT(DAY FROM p.birth_date) <= 15',
+            """SELECT * FROM "Person" AS p WHERE EXTRACT(YEAR FROM p.birth_date) >= 1980 AND EXTRACT(MONTH FROM p.birth_date) > 6 AND EXTRACT(DAY FROM p.birth_date) <= 15""",
         )
 
     def test_where_date_time_delta(self):
         self.assertQueryIs(
             select(p for p in entity(Person) if year(now() - p.birth_date) >= 18),
-            'SELECT * FROM "Person" AS p WHERE EXTRACT(YEAR FROM (CURRENT_TIMESTAMP - p.birth_date)) >= 18',
+            """SELECT * FROM "Person" AS p WHERE EXTRACT(YEAR FROM (CURRENT_TIMESTAMP - p.birth_date)) >= 18""",
         )
 
     def test_insert_or_select(self):
@@ -182,7 +182,7 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
                 Address(id=1, city="Budapest"),
                 (a for a in entity(Address) if a.city == "Budapest"),
             ),
-            'WITH select_query AS (SELECT * FROM "Address" AS a WHERE a.city = \'Budapest\'), insert_query AS (INSERT INTO "Address" AS a (id, city) SELECT $1, $2 WHERE NOT EXISTS (SELECT * FROM select_query) RETURNING *) SELECT * FROM select_query UNION ALL SELECT * FROM insert_query',
+            """WITH select_query AS (SELECT * FROM "Address" AS a WHERE a.city = 'Budapest'), insert_query AS (INSERT INTO "Address" AS a (id, city) SELECT $1, $2 WHERE NOT EXISTS (SELECT * FROM select_query) RETURNING *) SELECT * FROM select_query UNION ALL SELECT * FROM insert_query""",
         )
 
     def test_expression_cache(self):

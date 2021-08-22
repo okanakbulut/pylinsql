@@ -12,7 +12,7 @@ from . import async_database
 from .async_database import ConnectionParameters, DatabaseClient
 from .base import optional_cast
 from .core import DataClass
-from .schema import ForeignKey, Reference
+from .schema import ForeignKey, PrimaryKey, Reference
 
 T = TypeVar("T")
 
@@ -20,19 +20,23 @@ T = TypeVar("T")
 def _db_type_to_py_type(db_type: str, nullable: bool) -> type:
     "Maps a PostgreSQL type to a Python type."
 
-    if db_type == "character varying" or db_type == "text":
+    if db_type in ["character varying", "text"]:
         py_type = str
-    elif db_type == "boolean":
+    elif db_type in ["boolean"]:
         py_type = bool
-    elif db_type == "smallint" or db_type == "integer" or db_type == "bigint":
+    elif db_type in ["smallint", "integer", "bigint"]:
         py_type = int
-    elif db_type == "real" or db_type == "double precision":
+    elif db_type in ["real", "double precision"]:
         py_type = float
-    elif db_type == "date":
+    elif db_type in ["date"]:
         py_type = datetime.date
-    elif db_type == "time without time zone":
+    elif db_type in ["time", "time with time zone", "time without time zone"]:
         py_type = datetime.time
-    elif db_type == "timestamp without time zone":
+    elif db_type in [
+        "timestamp",
+        "timestamp with time zone",
+        "timestamp without time zone",
+    ]:
         py_type = datetime.datetime
     else:
         raise RuntimeError(f"unrecognized database type: {db_type}")
@@ -61,6 +65,7 @@ class TableSchema:
     name: str
     description: str
     columns: Dict[str, ColumnSchema]
+    primary_key: Optional[PrimaryKey] = None
 
 
 @dataclass
@@ -74,144 +79,212 @@ class CatalogSchema:
         return bool(self.tables)
 
 
-async def get_table_schema(
-    conn: DatabaseClient, db_schema: str, db_table: str
-) -> TableSchema:
-    "Retrieves metadata for a table in the current catalog."
-
-    query = """
-        SELECT
-            dsc.description
-        FROM
-            pg_catalog.pg_class cls
-                INNER JOIN pg_catalog.pg_namespace ns ON cls.relnamespace = ns.oid
-                INNER JOIN pg_catalog.pg_description dsc ON cls.oid = dsc.objoid
-        WHERE
-            ns.nspname = $1 AND cls.relname = $2 AND dsc.objsubid = 0
-    """
-    description = await conn.typed_fetch_value(str, query, db_schema, db_table)
-
-    query = """
-        WITH
-            column_description AS (
-                SELECT
-                    dsc.objsubid,
-                    dsc.description
-                FROM
-                    pg_catalog.pg_class cls
-                        INNER JOIN pg_catalog.pg_namespace ns ON cls.relnamespace = ns.oid
-                        INNER JOIN pg_catalog.pg_description dsc ON cls.oid = dsc.objoid
-                WHERE
-                    ns.nspname = $1 AND cls.relname = $2
-            )
-        SELECT
-            column_name AS name,
-            CASE WHEN is_nullable = 'YES' THEN 1 WHEN is_nullable = 'NO' THEN 0 ELSE NULL END AS is_nullable,
-            data_type,
-			column_default,
-			character_maximum_length,
-			is_identity,
-            description
-        FROM
-            information_schema.columns
-                LEFT JOIN column_description ON objsubid = ordinal_position
-        WHERE
-            table_catalog = CURRENT_CATALOG AND table_schema = $1 AND table_name = $2
-        ORDER BY
-            ordinal_position
-    """
-    columns = await conn.raw_fetch(query, db_schema, db_table)
-    column_schemas = {}
-    for column in columns:
-        typ = _db_type_to_py_type(column["data_type"], column["is_nullable"])
-        column_schema = ColumnSchema(
-            name=column["name"],
-            data_type=typ,
-            default=optional_cast(typ, column["column_default"]),
-            description=column["description"],
-        )
-        column_schemas[column_schema.name] = column_schema
-
-    table_schema = TableSchema(
-        name=db_table, description=description, columns=column_schemas
-    )
-    await set_foreign_keys(conn, db_schema, table_schema)
-    return table_schema
-
-
-async def get_catalog_schema(conn: DatabaseClient, db_schema: str) -> CatalogSchema:
-    "Retrieves metadata for the current catalog."
-
-    query = """
-        SELECT
-            table_name
-        FROM
-            information_schema.tables
-        WHERE
-            table_catalog = CURRENT_CATALOG AND table_schema = $1
-    """
-    tables = await conn.typed_fetch_column(str, query, db_schema)
-    table_schemas = [await get_table_schema(conn, db_schema, table) for table in tables]
-    table_schema_map = dict((table.name, table) for table in table_schemas)
-    return CatalogSchema(name=db_schema, tables=table_schema_map)
+@dataclass
+class _UniqueConstraint:
+    key_name: str
+    key_schema: str
+    key_table: str
+    key_column: str
 
 
 @dataclass
-class Constraint:
-    contraint_name: str
-    child_column: str
-    parent_table: str
-    parent_column: str
+class _ReferenceConstraint:
+    foreign_key_name: str
+    foreign_key_schema: str
+    foreign_key_table: str
+    foreign_key_column: str
+    primary_key_schema: str
+    primary_key_table: str
+    primary_key_column: str
 
 
-async def set_foreign_keys(
-    conn: DatabaseClient, db_schema: str, table_schema: TableSchema
-) -> None:
-    "Binds table relations associating foreign keys with primary keys."
+class _CatalogSchemaBuilder:
+    conn: DatabaseClient
+    db_schema: str
 
-    query = """
-        SELECT 
-            conname AS contraint_name,
-            att2.attname AS child_column, 
-            cls.relname AS parent_table,
-            att1.attname AS parent_column
-        FROM
-            (SELECT 
-                UNNEST(con.conkey) AS parent, 
-                UNNEST(con.confkey) AS child, 
-                con.confrelid, 
-                con.conrelid,
-                con.conname
-            FROM 
-                pg_class cls
-                    INNER JOIN pg_namespace AS ns ON cls.relnamespace = ns.oid
-                    INNER JOIN pg_constraint AS con ON con.conrelid = cls.oid
+    def __init__(self, conn: DatabaseClient, db_schema: str):
+        self.conn = conn
+        self.db_schema = db_schema
+
+    async def get_catalog_schema(self) -> CatalogSchema:
+        "Retrieves metadata for the current catalog."
+
+        query = """
+            SELECT
+                table_name
+            FROM
+                information_schema.tables
             WHERE
-                cls.relname = $2 AND ns.nspname = $1 AND con.contype = 'f'
-            ) AS reference_constraint
-                INNER JOIN pg_attribute AS att1 ON
-                    att1.attrelid = reference_constraint.confrelid AND att1.attnum = reference_constraint.child
-                INNER JOIN pg_class AS cls ON
-                    cls.oid = reference_constraint.confrelid
-                INNER JOIN pg_attribute AS att2 ON
-                    att2.attrelid = reference_constraint.conrelid AND att2.attnum = reference_constraint.parent
-    """
-    constraints = await conn.typed_fetch(
-        Constraint, query, db_schema, table_schema.name
-    )
-    for constraint in constraints:
-        column = table_schema.columns[constraint.child_column]
-        if column.references is not None:
-            raise RuntimeError(
-                f"column {column.name} already has a foreign key constraint"
+                table_catalog = CURRENT_CATALOG AND table_schema = $1
+        """
+        tables = await self.conn.typed_fetch_column(str, query, self.db_schema)
+        table_schemas = [await self._get_table_schema(table) for table in tables]
+        table_schema_map = dict((table.name, table) for table in table_schemas)
+        return CatalogSchema(name=self.db_schema, tables=table_schema_map)
+
+    async def _get_table_schema(self, db_table: str) -> TableSchema:
+        "Retrieves metadata for a table in the current catalog."
+
+        query = """
+            SELECT
+                dsc.description
+            FROM
+                pg_catalog.pg_class cls
+                    INNER JOIN pg_catalog.pg_namespace ns ON cls.relnamespace = ns.oid
+                    INNER JOIN pg_catalog.pg_description dsc ON cls.oid = dsc.objoid
+            WHERE
+                ns.nspname = $1 AND cls.relname = $2 AND dsc.objsubid = 0
+        """
+        description = await self.conn.typed_fetch_value(
+            str, query, self.db_schema, db_table
+        )
+
+        query = """
+            WITH
+                column_description AS (
+                    SELECT
+                        dsc.objsubid,
+                        dsc.description
+                    FROM
+                        pg_catalog.pg_class cls
+                            INNER JOIN pg_catalog.pg_namespace ns ON cls.relnamespace = ns.oid
+                            INNER JOIN pg_catalog.pg_description dsc ON cls.oid = dsc.objoid
+                    WHERE
+                        ns.nspname = $1 AND cls.relname = $2
+                )
+            SELECT
+                column_name,
+                CASE
+                    WHEN is_nullable = 'YES' THEN TRUE
+                    WHEN is_nullable = 'NO' THEN FALSE
+                    ELSE NULL
+                END AS is_nullable,
+                data_type,
+                column_default,
+                character_maximum_length,
+                CASE
+                    WHEN is_identity = 'YES' THEN TRUE
+                    WHEN is_identity = 'NO' THEN FALSE
+                    ELSE NULL
+                END AS is_identity,
+                description
+            FROM
+                information_schema.columns cols
+                    LEFT JOIN column_description ON cols.ordinal_position = objsubid
+            WHERE
+                table_catalog = CURRENT_CATALOG AND table_schema = $1 AND table_name = $2
+            ORDER BY
+                ordinal_position
+        """
+        columns = await self.conn.raw_fetch(query, self.db_schema, db_table)
+        column_schemas = {}
+        for column in columns:
+            typ = _db_type_to_py_type(column["data_type"], column["is_nullable"])
+            column_schema = ColumnSchema(
+                name=column["column_name"],
+                data_type=typ,
+                default=optional_cast(typ, column["column_default"]),
+                description=column["description"],
+            )
+            column_schemas[column_schema.name] = column_schema
+
+        table_schema = TableSchema(
+            name=db_table, description=description, columns=column_schemas
+        )
+        await self._set_foreign_keys(table_schema)
+        await self._set_unique_keys(table_schema)
+        return table_schema
+
+    async def _set_unique_keys(self, table_schema: TableSchema) -> None:
+        query = """
+            SELECT
+                ukey.constraint_name AS key_name,
+                ukey.table_schema AS key_schema,
+                ukey.table_name AS key_table,
+                ukey.column_name AS key_column
+
+            FROM
+                information_schema.table_constraints tab_con
+                    INNER JOIN information_schema.key_column_usage ukey ON
+                        tab_con.constraint_catalog = ukey.constraint_catalog AND
+                        tab_con.constraint_schema = ukey.constraint_schema AND
+                        tab_con.constraint_name = ukey.constraint_name
+                        
+            WHERE ukey.table_catalog = CURRENT_CATALOG
+                AND ukey.table_schema = $1
+                AND ukey.table_name = $2
+                AND tab_con.constraint_type = 'PRIMARY KEY'
+        """
+        constraints = await self.conn.typed_fetch(
+            _UniqueConstraint, query, self.db_schema, table_schema.name
+        )
+        if len(constraints) > 1:
+            table_schema.primary_key = PrimaryKey(
+                constraints[0].key_name,
+                [constraint.key_column for constraint in constraints],
+            )
+        elif len(constraints) > 0:
+            table_schema.primary_key = PrimaryKey(
+                constraints[0].key_name, constraints[0].key_column
+            )
+        else:
+            table_schema.primary_key = None
+
+    async def _set_foreign_keys(self, table_schema: TableSchema) -> None:
+        "Binds table relations associating foreign keys with primary keys."
+
+        query = """
+            SELECT
+                fkey.constraint_name AS foreign_key_name,
+                fkey.table_schema AS foreign_key_schema,
+                fkey.table_name AS foreign_key_table,
+                fkey.column_name AS foreign_key_column,
+                pkey.constraint_name AS primary_key_name,
+                pkey.table_schema AS primary_key_schema,
+                pkey.table_name AS primary_key_table,
+                pkey.column_name AS primary_key_column
+            FROM
+                information_schema.referential_constraints ref_con
+                    INNER JOIN information_schema.key_column_usage pkey ON
+                        ref_con.unique_constraint_catalog = pkey.constraint_catalog AND
+                        ref_con.unique_constraint_schema = pkey.constraint_schema AND
+                        ref_con.unique_constraint_name = pkey.constraint_name
+                    INNER JOIN information_schema.key_column_usage fkey ON
+                        ref_con.constraint_catalog = fkey.constraint_catalog AND
+                        ref_con.constraint_schema = fkey.constraint_schema AND
+                        ref_con.constraint_name = fkey.constraint_name
+            WHERE
+                fkey.table_catalog = CURRENT_CATALOG
+                    AND fkey.table_schema = $1
+                    AND fkey.table_name = $2
+        """
+        constraints = await self.conn.typed_fetch(
+            _ReferenceConstraint, query, self.db_schema, table_schema.name
+        )
+        for constraint in constraints:
+            if constraint.foreign_key_schema != constraint.primary_key_schema:
+                raise RuntimeError(
+                    f"foreign key table schema {constraint.foreign_key_schema} and primary key table schema {constraint.primary_key_schema} are not the same"
+                )
+
+            column = table_schema.columns[constraint.foreign_key_column]
+            if column.references is not None:
+                raise RuntimeError(
+                    f"column {column.name} already has a foreign key constraint"
+                )
+
+            column.references = ForeignKey(
+                name=constraint.foreign_key_name,
+                references=Reference(
+                    table=constraint.primary_key_table,
+                    column=constraint.primary_key_column,
+                ),
             )
 
-        column.references = ForeignKey(
-            name=constraint.contraint_name,
-            references=Reference(
-                table=constraint.parent_table, column=constraint.parent_column
-            ),
-        )
+
+async def get_catalog_schema(conn: DatabaseClient, db_schema: str) -> CatalogSchema:
+    builder = _CatalogSchemaBuilder(conn, db_schema)
+    return await builder.get_catalog_schema()
 
 
 def column_to_field(
@@ -243,6 +316,8 @@ def table_to_dataclass(table: TableSchema) -> DataClass:
 
     typ = dataclasses.make_dataclass(class_name, fields)
     typ.__doc__ = table.description
+    if table.primary_key is not None:
+        typ.primary_key = table.primary_key
     return typ
 
 
@@ -291,6 +366,13 @@ def dataclasses_to_stream(types: List[DataClass], target: TextIO):
         if typ.__doc__:
             print(f"    {repr(typ.__doc__)}", file=target)
             print(file=target)
+
+        # primary key
+        if typ.primary_key is not None:
+            print(f"    primary_key = {repr(typ.primary_key)}", file=target)
+            print(file=target)
+
+        # table columns
         for field in dataclasses.fields(typ):
             if is_type_optional(field.type):
                 inner_type = unwrap_optional_type(field.type)
