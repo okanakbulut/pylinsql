@@ -180,6 +180,20 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
             'WITH select_query AS (SELECT * FROM "Address" AS a WHERE a.city = \'Budapest\'), insert_query AS (INSERT INTO "Address" AS a (id, city) SELECT $1, $2 WHERE NOT EXISTS (SELECT * FROM select_query) RETURNING *) SELECT * FROM select_query UNION ALL SELECT * FROM insert_query',
         )
 
+    def test_expression_cache(self):
+        expr = (
+            asc(p.given_name)
+            for p, a in entity(Person, Address)
+            if inner_join(p.address_id, a.id)
+            and (
+                (p.given_name == "John" and p.family_name != "Doe")
+                or (a.city != "London")
+            )
+        )
+        query1 = select(expr).sql
+        query2 = select(expr).sql
+        self.assertEqual(query1, query2)
+
 
 if __name__ == "__main__":
     unittest.main()

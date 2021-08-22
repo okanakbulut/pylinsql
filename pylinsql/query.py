@@ -4,16 +4,17 @@ Construct a SQL query from a Python expression.
 
 from __future__ import annotations
 
+import functools
 import inspect
 import sys
 from typing import Generator, List, Type
 
 from .builder import Context, QueryBuilder, QueryBuilderArgs
-from .core import Query, EntityProxy
-from .decompiler import CodeExpression
+from .core import EntityProxy, Query
+from .decompiler import CodeExpression, CodeExpressionAnalyzer
 
 
-def get_entity_types(sql_generator_expr) -> List[Type]:
+def get_entity_types(sql_generator_expr: Generator) -> List[Type]:
     if not inspect.isgenerator(sql_generator_expr):
         raise TypeError(
             f"expected a SQL generator expression but got: {type(sql_generator_expr)}"
@@ -26,20 +27,11 @@ def get_entity_types(sql_generator_expr) -> List[Type]:
     return entity.types
 
 
-def _query_builder_args(sql_generator_expr: Generator) -> QueryBuilderArgs:
-    if not inspect.isgenerator(sql_generator_expr):
-        raise TypeError(
-            f"expected a SQL generator expression but got: {type(sql_generator_expr)}"
-        )
-
-    # get reference to caller's frame
-    caller = sys._getframe(2)
-    closure_vars = caller.f_locals
-
-    # analyze expression
-    code = CodeExpression(sql_generator_expr)
+@functools.lru_cache
+def _analyze_expression(sql_generator_expr: Generator) -> CodeExpression:
+    code_analyzer = CodeExpressionAnalyzer(sql_generator_expr)
     try:
-        local_vars, conditional_expr, yield_expr = code.get_expression()
+        return code_analyzer.get_expression()
     except AttributeError as e:
         path = sql_generator_expr.gi_frame.f_code.co_filename
         lineno = sql_generator_expr.gi_frame.f_code.co_firstlineno
@@ -47,11 +39,31 @@ def _query_builder_args(sql_generator_expr: Generator) -> QueryBuilderArgs:
             f'error parsing expression in file "{path}", line {lineno}'
         ) from e
 
-    context = Context(local_vars, closure_vars)
-    source_arg = code.argument
+
+def _query_builder_args(sql_generator_expr: Generator) -> QueryBuilderArgs:
+    if not inspect.isgenerator(sql_generator_expr):
+        raise TypeError(
+            f"expected a SQL generator expression but got: {type(sql_generator_expr)}"
+        )
+
+    # obtain AST representation of generator expression
+    code_expression = _analyze_expression(sql_generator_expr)
+
+    # get reference to caller's frame
+    caller = sys._getframe(2)
+    closure_vars = caller.f_locals
+
+    # build query context
+    context = Context(code_expression.local_vars, closure_vars)
+    source_arg = sql_generator_expr.gi_frame.f_locals[".0"]
 
     # build SQL query
-    return QueryBuilderArgs(source_arg, context, conditional_expr, yield_expr)
+    return QueryBuilderArgs(
+        source_arg,
+        context,
+        code_expression.conditional_expr,
+        code_expression.yield_expr,
+    )
 
 
 def select(sql_generator_expr: Generator) -> Query:

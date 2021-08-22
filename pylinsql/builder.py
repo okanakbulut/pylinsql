@@ -7,12 +7,14 @@ This module is used internally.
 from __future__ import annotations
 
 import builtins
+import dataclasses
 import enum
 import functools
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .ast import *
+from .base import is_dataclass_instance
 from .core import *
 
 _aggregate_functions = Dispatcher([avg, count, max, min, sum])
@@ -650,7 +652,7 @@ class QueryBuilder:
             sql_parts.extend(["ORDER BY", ", ".join(sql_order)])
         return " ".join(sql_parts)
 
-    def insert_or_select(self, qba: QueryBuilderArgs, insert_obj: Any) -> str:
+    def insert_or_select(self, qba: QueryBuilderArgs, insert_obj: Dataclass) -> str:
         if not is_dataclass_instance(insert_obj):
             raise TypeError(f"{insert_obj} must be a dataclass instance")
 

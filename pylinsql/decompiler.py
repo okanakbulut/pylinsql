@@ -14,13 +14,7 @@ from types import CodeType
 from typing import Any, Callable, Generator, List, Tuple, Union
 
 from .ast import *
-
-
-def islambda(v):
-    "True if (and only if) argument holds a lambda function."
-
-    LAMBDA = lambda: None
-    return isinstance(v, type(LAMBDA)) and v.__name__ == LAMBDA.__name__
+from .base import is_lambda
 
 
 def pairwise(iterable):
@@ -187,18 +181,23 @@ class _BasicBlock:
     end_index: int = None
 
 
+@dataclass
 class CodeExpression:
+    local_vars: List[str]
+    conditional_expr: Expression
+    yield_expr: Expression
+
+
+class CodeExpressionAnalyzer:
     obj: Union[Callable, Generator]
     codeobject: CodeType
-    argument: Any = None
     instructions: List[dis.Instruction]
 
     def __init__(self, obj: Any):
         self.obj = obj
         if inspect.isgenerator(obj):
             self.codeobject = obj.gi_frame.f_code
-            self.argument = obj.gi_frame.f_locals[".0"]
-        elif islambda(obj):
+        elif is_lambda(obj):
             self.codeobject = obj.__code__
         else:
             raise TypeError(
@@ -368,7 +367,7 @@ class CodeExpression:
 
         return nodes[0].expr
 
-    def get_expression(self) -> Tuple[List[str], Expression, Expression]:
+    def get_expression(self) -> CodeExpression:
         variables, nodes = self._get_abstract_nodes()
 
         if not inspect.isgenerator(self.obj):
@@ -377,7 +376,7 @@ class CodeExpression:
         cond_expr = self._get_condition(nodes) if len(nodes) > 2 else None
         yield_expr = nodes[-1].expr
 
-        return variables, cond_expr, yield_expr
+        return CodeExpression(variables, cond_expr, yield_expr)
 
     def _show_blocks(self, blocks):
         for block in blocks:

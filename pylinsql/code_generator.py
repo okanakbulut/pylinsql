@@ -6,11 +6,10 @@ import typing
 from dataclasses import Field, dataclass
 from typing import Any, Dict, List, Optional, TextIO, Tuple, Type, TypeVar, Union
 
-from pylinsql.base import optional_cast
-from pylinsql.schema import ForeignKey
-
 from .async_database import DatabaseClient
+from .base import optional_cast
 from .core import Dataclass
+from .schema import ForeignKey
 
 T = TypeVar("T")
 

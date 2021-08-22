@@ -2,10 +2,10 @@
 Construct a SQL query from a Python expression.
 """
 
-import dataclasses
 import datetime
 from typing import Dict, List, Tuple, Type, TypeVar, Union, overload
-from typing_extensions import Protocol
+
+from .base import Dataclass, is_dataclass_type
 
 B = TypeVar("B")
 T = TypeVar("T")
@@ -67,24 +67,6 @@ def entity(
     cls6: Type[T6],
 ) -> List[Tuple[T1, T2, T3, T4, T5, T6]]:
     ...
-
-
-class Dataclass(Protocol):
-    "Identifies a type as a dataclass type."
-
-    __dataclass_fields__: Dict
-
-
-def is_dataclass_type(typ):
-    "True if the argument corresponds to a data class type (but not an instance)."
-
-    return isinstance(typ, type) and dataclasses.is_dataclass(typ)
-
-
-def is_dataclass_instance(obj):
-    "True if the argument corresponds to a data class instance (but not a type)."
-
-    return not isinstance(obj, type) and dataclasses.is_dataclass(obj)
 
 
 def is_primitive_type(typ):

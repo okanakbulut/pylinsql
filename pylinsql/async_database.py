@@ -21,9 +21,9 @@ from typing import (
 
 import asyncpg
 
-from pylinsql.base import optional_cast
-from pylinsql.core import DEFAULT, is_dataclass_type
-from pylinsql.query import insert_or_select, select
+from .base import optional_cast
+from .core import DEFAULT, is_dataclass_type
+from .query import insert_or_select, select
 
 T = TypeVar("T")
 
