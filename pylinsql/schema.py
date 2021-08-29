@@ -15,17 +15,23 @@ class _CompactDataClass:
 
 @dataclass(frozen=True, repr=False)
 class Reference(_CompactDataClass):
+    "Captures a set of columns in a table referenced by a foreign key constraint."
+
     table: str
     column: Union[str, List[str]]
 
 
 @dataclass(frozen=True, repr=False)
 class PrimaryKey(_CompactDataClass):
+    "Identifies a set of columns in a table as part of the primary key."
+
     name: str
     column: Union[str, List[str]]
 
 
 @dataclass(frozen=True, repr=False)
 class ForeignKey(_CompactDataClass):
+    "Declares a foreign key in a table."
+
     name: str
     references: Reference

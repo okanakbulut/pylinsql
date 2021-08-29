@@ -4,13 +4,12 @@ import datetime
 import io
 import keyword
 import sys
-import typing
-from dataclasses import Field, dataclass
+from dataclasses import Field, dataclass, MISSING
 from typing import Any, Dict, List, Optional, TextIO, Tuple, Type, TypeVar, Union
 
 from . import async_database
 from .async_database import ConnectionParameters, DatabaseClient
-from .base import optional_cast
+from .base import is_optional_type, optional_cast, unwrap_optional_type
 from .core import DataClass
 from .schema import ForeignKey, PrimaryKey, Reference
 
@@ -289,20 +288,29 @@ async def get_catalog_schema(conn: DatabaseClient, db_schema: str) -> CatalogSch
 
 def column_to_field(
     column: ColumnSchema,
-) -> Union[Tuple[str, Type], Tuple[str, Type, Field]]:
+) -> Tuple[str, type, Field]:
     if keyword.iskeyword(column.name):
         field_name = f"{column.name}_"  # PEP 8: single trailing underscore to avoid conflicts with Python keyword
     else:
         field_name = column.name
 
-    if column.references is None:
-        return (field_name, column.data_type)
-    else:
-        return (
-            field_name,
-            column.data_type,
-            dataclasses.field(metadata={"foreign_key": column.references}),
-        )
+    metadata: Dict[str, Any] = {}
+    if column.description is not None:
+        metadata["description"] = column.description
+    if column.references is not None:
+        metadata["foreign_key"] = column.references
+
+    default = MISSING
+    if column.default is not None:
+        default = column.default
+    elif is_optional_type(column.data_type):
+        default = None
+
+    return (
+        field_name,
+        column.data_type,
+        dataclasses.field(default=default, metadata=metadata if metadata else None),
+    )
 
 
 def table_to_dataclass(table: TableSchema) -> DataClass:
@@ -313,6 +321,9 @@ def table_to_dataclass(table: TableSchema) -> DataClass:
         class_name = f"{table.name}_"  # PEP 8: single trailing underscore to avoid conflicts with Python keyword
     else:
         class_name = table.name
+
+    # default arguments must follow non-default arguments
+    fields.sort(key=lambda f: f[2].default is not MISSING)
 
     typ = dataclasses.make_dataclass(class_name, fields)
     typ.__doc__ = table.description
@@ -325,28 +336,6 @@ def catalog_to_dataclasses(catalog: CatalogSchema) -> List[DataClass]:
     "Generates a list of dataclass types corresponding to a catalog schema."
 
     return [table_to_dataclass(table) for table in catalog.tables.values()]
-
-
-def is_type_optional(typ: Type) -> bool:
-    "True if the type annotation corresponds to an optional type (e.g. Optional[T] or Union[T1,T2,None])."
-
-    if typing.get_origin(typ) is Union:  # Optional[T] is represented as Union[T, None]
-        return type(None) in typing.get_args(typ)
-
-    return False
-
-
-def unwrap_optional_type(typ: Type[Optional[T]]) -> Type[T]:
-    "For an optional type Optional[T], retrieves the underlying type T."
-
-    # Optional[T] is represented internally as Union[T, None]
-    if typing.get_origin(typ) is not Union:
-        raise ValueError("optional type must have un-subscripted type of Union")
-
-    # will automatically unwrap Union[T] into T
-    return Union[
-        tuple(filter(lambda item: item is not type(None), typing.get_args(typ)))
-    ]
 
 
 def dataclasses_to_stream(types: List[DataClass], target: TextIO):
@@ -374,13 +363,17 @@ def dataclasses_to_stream(types: List[DataClass], target: TextIO):
 
         # table columns
         for field in dataclasses.fields(typ):
-            if is_type_optional(field.type):
+            if is_optional_type(field.type):
                 inner_type = unwrap_optional_type(field.type)
                 type_name = f"Optional[{inner_type.__name__}]"
             else:
                 type_name = field.type.__name__
-            if field.metadata:
+            if field.default is not MISSING and field.metadata:
+                initializer = f" = field(default = {repr(field.default)}, metadata = {repr(dict(field.metadata))})"
+            elif field.metadata:
                 initializer = f" = field(metadata = {repr(dict(field.metadata))})"
+            elif field.default is not MISSING:
+                initializer = f" = {repr(field.default)}"
             else:
                 initializer = ""
             print(f"    {field.name}: {type_name}{initializer}", file=target)

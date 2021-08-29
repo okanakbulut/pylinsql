@@ -1,7 +1,14 @@
 import dataclasses
-from typing import Any, Dict, Optional, Protocol, Type, TypeVar
+import typing
+from typing import Any, Dict, Optional, Protocol, Type, TypeVar, Union, overload
 
 T = TypeVar("T")
+T1 = TypeVar("T1")
+T2 = TypeVar("T2")
+T3 = TypeVar("T3")
+T4 = TypeVar("T4")
+T5 = TypeVar("T5")
+T6 = TypeVar("T6")
 
 
 def is_lambda(v) -> bool:
@@ -9,6 +16,50 @@ def is_lambda(v) -> bool:
 
     LAMBDA = lambda: None
     return isinstance(v, type(LAMBDA)) and v.__name__ == LAMBDA.__name__
+
+
+def is_optional_type(typ: Type[Any]) -> bool:
+    "True if the type is an optional type (e.g. Optional[T] or Union[T1,T2,None])."
+
+    if typing.get_origin(typ) is Union:  # Optional[T] is represented as Union[T, None]
+        return type(None) in typing.get_args(typ)
+
+    return False
+
+
+@overload
+def unwrap_optional_type(typ: Type[Optional[T]]) -> Type[T]:
+    ...
+
+
+@overload
+def unwrap_optional_type(typ: Type[Union[None, T1, T2]]) -> Type[Union[T1, T2]]:
+    ...
+
+
+@overload
+def unwrap_optional_type(typ: Type[Union[None, T1, T2, T3]]) -> Type[Union[T1, T2, T3]]:
+    ...
+
+
+@overload
+def unwrap_optional_type(
+    typ: Type[Union[None, T1, T2, T3, T4]]
+) -> Type[Union[T1, T2, T3, T4]]:
+    ...
+
+
+def unwrap_optional_type(typ: Type[Optional[T]]) -> Type[T]:
+    "Extracts the type qualified as optional (e.g. returns T for Optional[T])."
+
+    # Optional[T] is represented internally as Union[T, None]
+    if typing.get_origin(typ) is not Union:
+        raise TypeError("optional type must have un-subscripted type of Union")
+
+    # will automatically unwrap Union[T] into T
+    return Union[
+        tuple(filter(lambda item: item is not type(None), typing.get_args(typ)))
+    ]
 
 
 def optional_cast(typ: Type[T], value: Optional[Any]) -> Optional[T]:

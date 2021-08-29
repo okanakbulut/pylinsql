@@ -3,18 +3,9 @@ Construct a SQL query from a Python expression.
 """
 
 import datetime
-from typing import Dict, List, Tuple, Type, TypeVar, Union, overload
+from typing import List, Tuple, Type, Union, overload
 
-from .base import DataClass, is_dataclass_type
-
-B = TypeVar("B")
-T = TypeVar("T")
-T1 = TypeVar("T1")
-T2 = TypeVar("T2")
-T3 = TypeVar("T3")
-T4 = TypeVar("T4")
-T5 = TypeVar("T5")
-T6 = TypeVar("T6")
+from .base import T, T1, T2, T3, T4, T5, T6, DataClass, is_dataclass_type
 
 
 class EntityProxy:
@@ -139,27 +130,27 @@ def sum(_: T) -> T:
     ...
 
 
-def avg_if(expression: T, condition: B) -> T:
+def avg_if(expression: T, condition: bool) -> T:
     "Conditional aggregation function: AVG(expression) FILTER (WHERE condition)."
     ...
 
 
-def count_if(expression: T, condition: B) -> T:
+def count_if(expression: T, condition: bool) -> T:
     "Conditional aggregation function: COUNT(expression) FILTER (WHERE condition)."
     ...
 
 
-def max_if(expression: T, condition: B) -> T:
+def max_if(expression: T, condition: bool) -> T:
     "Conditional aggregation function: MAX(expression) FILTER (WHERE condition)."
     ...
 
 
-def min_if(expression: T, condition: B) -> T:
+def min_if(expression: T, condition: bool) -> T:
     "Conditional aggregation function: MIN(expression) FILTER (WHERE condition)."
     ...
 
 
-def sum_if(expression: T, condition: B) -> T:
+def sum_if(expression: T, condition: bool) -> T:
     "Conditional aggregation function: SUM(expression) FILTER (WHERE condition)."
     ...
 
