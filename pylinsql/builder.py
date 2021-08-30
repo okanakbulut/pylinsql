@@ -11,6 +11,7 @@ import dataclasses
 import enum
 import functools
 from dataclasses import dataclass
+from datetime import date, time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .ast import *
@@ -114,42 +115,16 @@ class _OrderType(enum.Enum):
     Descending = desc.__name__
 
 
-class _QueryExtractor:
-    def _boolean_simplify(self, bool_expr: BooleanExpression) -> Expression:
-        parts = list(filter(None, (self.visit(expr) for expr in bool_expr.exprs)))
-        if len(parts) > 1:
-            return bool_expr
-        elif len(parts) == 1:
-            return parts[0]
-        else:
-            return None
+def _list_to_conj_expr(parts: List[Expression]) -> Union[Conjunction, Expression, None]:
+    if len(parts) > 1:
+        return Conjunction(parts)
+    elif len(parts) == 1:
+        return parts[0]
+    else:
+        return None
 
 
-class _QueryValidator(_QueryExtractor):
-    """
-    Validates if a Python generator expression is a valid query expression.
-    """
-
-    @functools.singledispatchmethod
-    def visit(self, arg):
-        return arg
-
-    @visit.register
-    def _(self, bool_expr: BooleanExpression):
-        return self._boolean_simplify(bool_expr)
-
-    @visit.register
-    def _(self, call: FunctionCall):
-        fn = _order_functions.get(call)
-        if fn:
-            raise TypeError(
-                f"order function {fn.__name__} can only be used as a top-level wrapper in the target expression part of the Python generator expression"
-            )
-
-        return call
-
-
-class _JoinExtractor(_QueryExtractor):
+class _JoinExtractor:
     """
     Extracts the join part from a Python generator expression to be used in a SQL FROM clause.
     """
@@ -160,21 +135,37 @@ class _JoinExtractor(_QueryExtractor):
         self.entity_joins = _EntityJoinCollection()
 
     @functools.singledispatchmethod
-    def visit(self, arg):
+    def visit(self, arg: Expression) -> Expression:
         return arg
 
     @visit.register
-    def _(self, bool_expr: BooleanExpression):
-        return self._boolean_simplify(bool_expr)
+    def _(self, conj: Conjunction) -> Union[Conjunction, Expression, None]:
+        parts = []
+        for expr in conj.exprs:
+            part = self.visit(expr)
+            if part:
+                parts.append(part)
 
-    def _join_expr(self, join_type: _JoinType, left: Expression, right: Expression):
+        return _list_to_conj_expr(parts)
+
+    @visit.register
+    def _(self, call: FunctionCall) -> Optional[FunctionCall]:
+        fn = _join_functions.get(call)
+        if fn:
+            return self._join_expr(_JoinType(fn.__name__), call.args[0], call.args[1])
+
+        return call
+
+    def _join_expr(
+        self, join_type: _JoinType, left: Expression, right: Expression
+    ) -> None:
         if not (
             isinstance(left, AttributeAccess)
             and isinstance(right, AttributeAccess)
             and isinstance(left.base, LocalRef)
             and isinstance(right.base, LocalRef)
         ):
-            raise TypeError(
+            raise QueryTypeError(
                 "join expressions must adhere to the format: join(entity1.attr1, entity2.attr2)"
             )
 
@@ -186,127 +177,165 @@ class _JoinExtractor(_QueryExtractor):
             right.attr_name,
         )
 
-    @visit.register
-    def _(self, call: FunctionCall):
+
+@enum.unique
+class _ConditionContext(enum.Enum):
+    UNDECIDED = ""
+    WHERE = "WHERE"
+    HAVING = "HAVING"
+
+
+class _ConditionContextClassifier:
+    _local_vars: List[str]
+    _context: _ConditionContext = _ConditionContext.UNDECIDED
+    _inside_aggregation: bool = False
+
+    def __init__(self, local_vars: List[str]):
+        self._local_vars = local_vars
+
+    def visit(self, arg: Expression) -> _ConditionContext:
+        self._context = _ConditionContext.UNDECIDED
+        self._inside_aggregation = False
+        self._visit(arg)
+        return self._context
+
+    @functools.singledispatchmethod
+    def _visit(self, _: Expression) -> None:
+        pass
+
+    @_visit.register
+    def _(self, bool_expr: BooleanExpression) -> None:
+        for expr in bool_expr.exprs:
+            self._visit(expr)
+
+    @_visit.register
+    def _(self, unary_expr: UnaryExpression) -> None:
+        self._visit(unary_expr.expr)
+
+    @_visit.register
+    def _(self, binary_expr: BinaryExpression) -> None:
+        self._visit(binary_expr.left)
+        self._visit(binary_expr.right)
+
+    @_visit.register
+    def _(self, comp: Comparison) -> None:
+        self._visit(comp.left)
+        self._visit(comp.right)
+
+    @_visit.register
+    def _(self, call: FunctionCall) -> None:
+        fn = _aggregate_functions.get(call)
+        if fn:
+            return self._visit_aggregation_func(fn, call)
+
+        fn = _conditional_aggregate_functions.get(call)
+        if fn:
+            return self._visit_aggregation_func(fn, call)
+
         fn = _join_functions.get(call)
         if fn:
-            return self._join_expr(_JoinType(fn.__name__), call.args[0], call.args[1])
+            raise QueryTypeError(
+                f"join function {fn.__name__} can only be used at the top-level in the conditional part (following 'if') of the Python generator expression"
+            )
 
-        return call
+        fn = _order_functions.get(call)
+        if fn:
+            raise QueryTypeError(
+                f"order function {fn.__name__} can only be used as a top-level wrapper in the target expression part (preceding 'for') of the Python generator expression"
+            )
+
+        # process regular functions
+        self._visit(call.base)
+        for arg in call.args:
+            self._visit(arg)
+
+    def _visit_aggregation_func(self, fn: Callable, call: FunctionCall) -> None:
+        if self._context is _ConditionContext.UNDECIDED:
+            self._context = _ConditionContext.HAVING
+
+        if self._context is _ConditionContext.HAVING:
+            if self._inside_aggregation:
+                raise QueryTypeError(
+                    f"cannot nest aggregation function {fn.__name__} inside another"
+                )
+
+            self._visit(call.base)
+            self._inside_aggregation = True
+            for arg in call.args:
+                self._visit(arg)
+            self._inside_aggregation = False
+
+        elif self._context is _ConditionContext.WHERE:
+            raise QueryTypeError(
+                f"cannot use aggregation function {fn.__name__} in a non-aggregation context"
+            )
+
+    @_visit.register
+    def _(self, attr: AttributeAccess) -> None:
+        self._visit(attr.base)
+
+    @_visit.register
+    def _(self, arg: LocalRef) -> None:
+        if arg.name not in self._local_vars:
+            return
+
+        if self._context is _ConditionContext.UNDECIDED:
+            self._context = _ConditionContext.WHERE
+
+        if self._context is _ConditionContext.HAVING and not self._inside_aggregation:
+            raise QueryTypeError(
+                f"cannot reference local variable {arg.name} outside of an aggregation function when in an aggregation context"
+            )
+
+    @_visit.register
+    def _(self, arg: Constant) -> Constant:
+        return arg
 
 
-class _ConditionExtractor(_QueryExtractor):
+class _ConditionExtractor:
+    _classifier: _ConditionContextClassifier
+    _where: List[Expression]
+    _having: List[Expression]
+
     """
     Extracts the conditional part from a Python generator expression to be used in a SQL WHERE or HAVING clause.
 
     This class takes the abstract syntax tree of a Python generator expression such as
     ```
-    ( p for p in entity(Person) if p.given_name == "John" and min(p.birth_year) >= 1980 )
+    ( p for p in entity(Person) if p.given_name == "John" and min(p.birth_date) >= datetime.date(1989, 10, 23) )
     ```
-    and (depending on initialization options) extracts `p.given_name == "John"`, which goes into the WHERE clause, or
-    `min(p.birth_year) >= 1980`, which goes into the HAVING clause.
+    and extracts `p.given_name == ...`, which goes into the WHERE clause, and `min(p.birth_date) >= ...`, which goes
+    into the HAVING clause.
 
     :param vars: Variables in the abstract syntax tree that correspond to entities.
-    :param aggregation: Whether the operation is to gather WHERE terms (False) or HAVING terms (True).
     """
 
-    def __init__(self, local_vars: List[str], aggregation: bool):
-        self.local_vars = local_vars
-        self.aggregation = aggregation
-        self.in_aggregation_fn = False
+    def __init__(self, local_vars: List[str]):
+        self._classifier = _ConditionContextClassifier(local_vars)
+        self._where = []
+        self._having = []
+
+    def where(self) -> Union[Conjunction, Expression, None]:
+        return _list_to_conj_expr(self._where)
+
+    def having(self) -> Union[Conjunction, Expression, None]:
+        return _list_to_conj_expr(self._having)
 
     @functools.singledispatchmethod
-    def visit(self, arg: Expression) -> Expression:
-        return arg
+    def visit(self, arg: Expression) -> None:
+        self._visit(arg)
 
     @visit.register
-    def _(self, bool_expr: BooleanExpression):
-        return self._boolean_simplify(bool_expr)
+    def _(self, conj: Conjunction) -> None:
+        for expr in conj.exprs:
+            self._visit(expr)
 
-    @visit.register
-    def _(self, unary_expr: UnaryExpression):
-        inner_expr = self.visit(unary_expr.expr)
-        if inner_expr:
-            return type(unary_expr)(inner_expr)
+    def _visit(self, expr: Expression) -> None:
+        context = self._classifier.visit(expr)
+        if context is _ConditionContext.HAVING:
+            self._having.append(expr)
         else:
-            return None
-
-    @visit.register
-    def _(self, binary_expr: BinaryExpression):
-        left_expr = self.visit(binary_expr.left)
-        right_expr = self.visit(binary_expr.right)
-        if left_expr and right_expr:
-            return type(binary_expr)(left_expr, right_expr)
-        else:
-            return None
-
-    @visit.register
-    def _(self, comp: Comparison):
-        left = self.visit(comp.left)
-        right = self.visit(comp.right)
-        if left and right:
-            return Comparison(comp.op, left, right)
-        else:
-            return None
-
-    @visit.register
-    def _(self, call: FunctionCall):
-        fn = _aggregate_functions.get(call)
-        if fn:
-            return self._get_aggregation_func(call)
-
-        fn = _conditional_aggregate_functions.get(call)
-        if fn:
-            return self._get_aggregation_func(call)
-
-        if not self.aggregation:
-            return FunctionCall(
-                self.visit(call.base), [self.visit(arg) for arg in call.args]
-            )
-
-        return None
-
-    def _get_aggregation_func(self, call: FunctionCall) -> Optional[FunctionCall]:
-        if self.aggregation:
-            self.in_aggregation_fn = True
-            args = [self.visit(arg) for arg in call.args]
-            self.in_aggregation_fn = False
-
-            return FunctionCall(self.visit(call.base), args)
-        else:
-            return None
-
-    @visit.register
-    def _(self, attr: AttributeAccess):
-        base = self.visit(attr.base)
-        if base:
-            return AttributeAccess(base, attr.attr_name)
-        else:
-            return None
-
-    @visit.register
-    def _(self, arg: ClosureRef):
-        return arg
-
-    @visit.register
-    def _(self, arg: GlobalRef):
-        return arg
-
-    @visit.register
-    def _(self, arg: LocalRef):
-        if arg.name in self.local_vars and (
-            self.aggregation
-            and not self.in_aggregation_fn
-            or not self.aggregation
-            and self.in_aggregation_fn
-        ):
-            return None
-
-        return arg
-
-    @visit.register
-    def _(self, arg: Constant):
-        return arg
+            self._where.append(expr)
 
 
 _query_parameters = [p_1, p_2, p_3, p_4, p_5, p_6, p_7, p_8, p_9]
@@ -337,14 +366,8 @@ class _QueryVisitor:
             f"unrecognized expression: {arg} (of type {type(arg)})"
         )
 
-    def _sql_where_expr(self, adjoiner: str, exprs: List[Expression]) -> Optional[str]:
-        parts = list(filter(None, (self.visit(expr) for expr in exprs)))
-        if len(parts) > 1:
-            return f" {adjoiner} ".join(parts)
-        elif len(parts) == 1:
-            return parts[0]
-        else:
-            return None
+    def _sql_where_expr(self, adjoiner: str, exprs: List[Expression]) -> str:
+        return f" {adjoiner} ".join(self.visit(expr) for expr in exprs)
 
     def _sql_unary_expr(self, op: str, unary_expr: UnaryExpression) -> str:
         expr = self.visit(unary_expr.expr)
@@ -356,63 +379,63 @@ class _QueryVisitor:
         return f"{left} {op} {right}"
 
     @_visit.register
-    def _(self, conj: Conjunction):
+    def _(self, conj: Conjunction) -> str:
         return self._sql_where_expr("AND", conj.exprs)
 
     @_visit.register
-    def _(self, disj: Disjunction):
+    def _(self, disj: Disjunction) -> str:
         return self._sql_where_expr("OR", disj.exprs)
 
     @_visit.register
-    def _(self, neg: Negation):
+    def _(self, neg: Negation) -> str:
         return self._sql_unary_expr("NOT ", neg)
 
     @_visit.register
-    def _(self, expr: UnaryPlus):
+    def _(self, expr: UnaryPlus) -> str:
         return self._sql_unary_expr("+", expr)
 
     @_visit.register
-    def _(self, expr: UnaryMinus):
+    def _(self, expr: UnaryMinus) -> str:
         return self._sql_unary_expr("-", expr)
 
     @_visit.register
-    def _(self, expr: Exponentiation):
+    def _(self, expr: Exponentiation) -> str:
         return self._sql_binary_expr("^", expr)
 
     @_visit.register
-    def _(self, expr: Multiplication):
+    def _(self, expr: Multiplication) -> str:
         return self._sql_binary_expr("*", expr)
 
     @_visit.register
-    def _(self, expr: Division):
+    def _(self, expr: Division) -> str:
         return self._sql_binary_expr("/", expr)
 
     @_visit.register
-    def _(self, expr: Addition):
+    def _(self, expr: Addition) -> str:
         return self._sql_binary_expr("+", expr)
 
     @_visit.register
-    def _(self, expr: Subtraction):
+    def _(self, expr: Subtraction) -> str:
         return self._sql_binary_expr("-", expr)
 
     @_visit.register
-    def _(self, expr: BitwiseNot):
+    def _(self, expr: BitwiseNot) -> str:
         return self._sql_unary_expr("~", expr)
 
     @_visit.register
-    def _(self, expr: BitwiseAnd):
+    def _(self, expr: BitwiseAnd) -> str:
         return self._sql_binary_expr("&", expr)
 
     @_visit.register
-    def _(self, expr: BitwiseXor):
+    def _(self, expr: BitwiseXor) -> str:
         return self._sql_binary_expr("#", expr)
 
     @_visit.register
-    def _(self, expr: BitwiseOr):
+    def _(self, expr: BitwiseOr) -> str:
         return self._sql_binary_expr("|", expr)
 
     @_visit.register
-    def _(self, comp: Comparison):
+    def _(self, comp: Comparison) -> str:
         if isinstance(comp.right, Constant) and comp.right.value is None:
             left = self.visit(comp.left)
             if comp.op == "is":
@@ -444,7 +467,7 @@ class _QueryVisitor:
         raise TypeError(f"illegal comparison: {comp}")
 
     @_visit.register
-    def _(self, call: FunctionCall):
+    def _(self, call: FunctionCall) -> str:
         fn = _aggregate_functions.get(call)
         if fn:
             args = ", ".join([self.visit(arg) for arg in call.args])
@@ -467,15 +490,23 @@ class _QueryVisitor:
         if call.is_dispatchable(now):
             return "CURRENT_TIMESTAMP"
 
-        raise ValueError(f"unrecognized function call: {call}")
+        if call.get_function_name() == date.__name__:
+            args = ", ".join([self.visit(arg) for arg in call.args])
+            return f"MAKE_DATE({args})"
+
+        if call.get_function_name() == time.__name__:
+            args = ", ".join([self.visit(arg) for arg in call.args])
+            return f"MAKE_TIME({args})"
+
+        raise TypeError(f"unrecognized function call: {call}")
 
     @_visit.register
-    def _(self, arg: AttributeAccess):
+    def _(self, arg: AttributeAccess) -> str:
         base = self.visit(arg.base)
         return f"{base}.{arg.attr_name}"
 
     @_visit.register
-    def _(self, arg: ClosureRef):
+    def _(self, arg: ClosureRef) -> str:
         value = self.closure_vars[arg.name]
         if isinstance(value, Query):
             return f"({value.sql})"
@@ -483,7 +514,7 @@ class _QueryVisitor:
             return value
 
     @_visit.register
-    def _(self, arg: GlobalRef):
+    def _(self, arg: GlobalRef) -> str:
         for param in _query_parameters:
             if arg.name == param.name:
                 self.parameters.add(param)
@@ -491,18 +522,18 @@ class _QueryVisitor:
         return arg.name
 
     @_visit.register
-    def _(self, arg: LocalRef):
+    def _(self, arg: LocalRef) -> str:
         return arg.name
 
     @_visit.register
-    def _(self, arg: TupleExpression):
+    def _(self, arg: TupleExpression) -> str:
         self.stack.append(TopLevelExpression())
         value = ", ".join(self.visit(expr) for expr in arg.exprs)
         self.stack.pop()
         return value
 
     @_visit.register
-    def _(self, arg: Constant):
+    def _(self, arg: Constant) -> str:
         if isinstance(arg.value, str):
             return "'" + arg.value.replace("'", "''") + "'"
         else:
@@ -515,7 +546,7 @@ class Context:
     closure_vars: Dict[str, Any]
 
 
-class _SelectExtractor(_QueryExtractor):
+class _SelectExtractor:
     query_visitor: _QueryVisitor
     local_vars: List[str]
     select: List[str]
@@ -531,7 +562,7 @@ class _SelectExtractor(_QueryExtractor):
         self.order_by = []
         self.has_aggregate = False
 
-    def visit(self, expr: Expression) -> Expression:
+    def visit(self, expr: Expression):
         self._visit(expr)
 
     def _visit_expr(self, expr: Expression) -> str:
@@ -566,13 +597,11 @@ class _SelectExtractor(_QueryExtractor):
         for expr in tup.exprs:
             self._visit(expr)
 
-    def _is_aggregate(self, expr):
+    def _is_aggregate(self, expr: Expression) -> bool:
         "True if an expression in a SELECT clause is an aggregation expression."
 
-        return (
-            _ConditionExtractor(self.local_vars, aggregation=True).visit(expr)
-            is not None
-        )
+        context = _ConditionContextClassifier(self.local_vars).visit(expr)
+        return context is _ConditionContext.HAVING
 
 
 @dataclass
@@ -585,7 +614,6 @@ class QueryBuilderArgs:
 
 class QueryBuilder:
     def select(self, qba: QueryBuilderArgs) -> str:
-        _QueryValidator().visit(qba.cond_expr)
         query_visitor = _QueryVisitor(qba.context.closure_vars)
 
         # extract JOIN clause from "if" part of generator expression
@@ -619,16 +647,16 @@ class QueryBuilder:
 
             sql_join.append(" ".join(sql_join_group))
 
+        # split compound conditional expression into parts
+        condition_visitor = _ConditionExtractor(qba.context.local_vars)
+        condition_visitor.visit(cond_expr)
+
         # construct WHERE expression
-        where_expr = _ConditionExtractor(
-            qba.context.local_vars, aggregation=False
-        ).visit(cond_expr)
+        where_expr = condition_visitor.where()
         sql_where = query_visitor.visit(where_expr) if where_expr else None
 
         # construct HAVING expression
-        having_expr = _ConditionExtractor(
-            qba.context.local_vars, aggregation=True
-        ).visit(cond_expr)
+        having_expr = condition_visitor.having()
         sql_having = query_visitor.visit(having_expr) if having_expr else None
 
         # construct SELECT expression
@@ -652,45 +680,44 @@ class QueryBuilder:
             sql_parts.extend(["ORDER BY", ", ".join(sql_order)])
         return " ".join(sql_parts)
 
-    def insert_or_select(self, qba: QueryBuilderArgs, insert_obj: DataClass) -> str:
+    def insert_or_select(self, qba: QueryBuilderArgs, insert_obj: DataClass[T]) -> str:
         if not is_dataclass_instance(insert_obj):
             raise TypeError(f"{insert_obj} must be a dataclass instance")
 
-        _QueryValidator().visit(qba.cond_expr)
         query_visitor = _QueryVisitor(qba.context.closure_vars)
 
         # check JOIN clause in "if" part of generator expression
         join_simplifier = _JoinExtractor()
         cond_expr = join_simplifier.visit(qba.cond_expr)
         if join_simplifier.entity_joins:
-            raise ValueError(
+            raise QueryTypeError(
                 "no join conditions are allowed in an insert or select query"
             )
 
         # construct FROM expression
         if len(qba.source.types) != 1:
-            raise ValueError(
+            raise QueryTypeError(
                 "a single target entity is required for an insert or select query"
             )
         entity_type = qba.source.types[0]
         entity_var = qba.context.local_vars[0]
         if not isinstance(insert_obj, entity_type):
-            raise TypeError(
+            raise QueryTypeError(
                 f"object to insert has wrong type: {type(insert_obj)}, expected: {entity_type}"
             )
         sql_from = f'"{entity_type.__name__}" AS {entity_var}'
 
+        # split compound conditional expression into parts
+        condition_visitor = _ConditionExtractor(qba.context.local_vars)
+        condition_visitor.visit(cond_expr)
+
         # construct WHERE expression
-        where_expr = _ConditionExtractor(
-            qba.context.local_vars, aggregation=False
-        ).visit(cond_expr)
+        where_expr = condition_visitor.where()
         sql_where = query_visitor.visit(where_expr) if where_expr else None
 
         # check HAVING expression
-        if _ConditionExtractor(qba.context.local_vars, aggregation=True).visit(
-            cond_expr
-        ):
-            raise ValueError(
+        if condition_visitor.having() is not None:
+            raise QueryTypeError(
                 "no aggregation functions are allowed in an insert or select query"
             )
 
@@ -698,7 +725,7 @@ class QueryBuilder:
         select_visitor = _SelectExtractor(query_visitor, qba.context.local_vars)
         select_visitor.visit(qba.yield_expr)
         if select_visitor.has_aggregate:
-            raise ValueError(
+            raise QueryTypeError(
                 "no aggregation functions are allowed in an insert or select query"
             )
 

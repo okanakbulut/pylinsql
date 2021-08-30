@@ -5,10 +5,9 @@ from datetime import datetime
 @dataclass
 class Person:
     id: int
-    birth_date: datetime
-    birth_year: int
     family_name: str
     given_name: str
+    birth_date: datetime
     perm_address_id: int
     temp_address_id: int
 

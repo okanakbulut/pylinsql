@@ -1,8 +1,10 @@
-from typing import Generator
 import unittest
+from datetime import date
+from typing import Generator
 
 from pylinsql.core import (
     Query,
+    QueryTypeError,
     asc,
     count,
     count_if,
@@ -27,7 +29,7 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
     def assertQueryIs(self, query_expr: Query, sql_string: str):
         self.assertEqual(query_expr.sql, sql_string)
 
-    def get_example_expr(self) -> Generator:
+    def get_example_expr(self) -> Generator[str, None, None]:
         expr = (
             asc(p.given_name)
             for p, a in entity(Person, Address)
@@ -96,29 +98,30 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
                 for p in entity(Person)
                 if p.given_name == "John"
                 and p.family_name != "Doe"
-                or (2021 - p.birth_year >= 18)
+                or (p.perm_address_id is not None)
             ),
-            """SELECT * FROM "Person" AS p WHERE p.given_name = 'John' AND p.family_name <> 'Doe' OR 2021 - p.birth_year >= 18""",
+            """SELECT * FROM "Person" AS p WHERE p.given_name = 'John' AND p.family_name <> 'Doe' OR p.perm_address_id IS NOT NULL""",
         )
 
     def test_where_having(self):
         self.assertQueryIs(
             select(
-                p
+                min(p.birth_date)
                 for p in entity(Person)
-                if p.given_name == "John" and min(p.birth_year) >= 1980
+                if p.given_name == "John" and min(p.birth_date) >= date(1989, 10, 23)
             ),
-            """SELECT * FROM "Person" AS p WHERE p.given_name = 'John' HAVING MIN(p.birth_year) >= 1980""",
+            """SELECT MIN(p.birth_date) FROM "Person" AS p WHERE p.given_name = 'John' HAVING MIN(p.birth_date) >= MAKE_DATE(1989, 10, 23)""",
         )
 
     def test_group_by(self):
         self.assertQueryIs(
             select(
-                (a.city, min(p.birth_year))
+                (a.city, min(p.birth_date))
                 for p, a in entity(Person, Address)
-                if inner_join(p.perm_address_id, a.id) and min(p.birth_year) >= 1980
+                if inner_join(p.perm_address_id, a.id)
+                and min(p.birth_date) >= date(1989, 10, 23)
             ),
-            """SELECT a.city, MIN(p.birth_year) FROM "Person" AS p INNER JOIN "Address" AS a ON p.perm_address_id = a.id GROUP BY a.city HAVING MIN(p.birth_year) >= 1980""",
+            """SELECT a.city, MIN(p.birth_date) FROM "Person" AS p INNER JOIN "Address" AS a ON p.perm_address_id = a.id GROUP BY a.city HAVING MIN(p.birth_date) >= MAKE_DATE(1989, 10, 23)""",
         )
 
     def test_order_by(self):
@@ -198,6 +201,39 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
 
         # verify query string is the same
         self.assertEqual(query1, query2)
+
+    def test_fail_wrong_type(self):
+        with self.assertRaises(TypeError):
+            select(entity(Person))
+
+    def test_fail_mixed_context(self):
+        with self.assertRaises(QueryTypeError):
+            select(p for p in entity(Person) if min(p.birth_date) >= p.birth_date)
+
+    def test_fail_nested_aggregation(self):
+        with self.assertRaises(QueryTypeError):
+            select(
+                p
+                for p in entity(Person)
+                if min(max(p.birth_date)) >= date(1989, 10, 23)
+            )
+
+    def test_fail_wrong_join(self):
+        with self.assertRaises(QueryTypeError):
+            select(
+                (p, a)
+                for p, a in entity(Person, Address)
+                if inner_join(p.perm_address_id, a.id)
+                or inner_join(p.temp_address_id, a.id)
+            )
+
+    def test_fail_wrong_order(self):
+        with self.assertRaises(QueryTypeError):
+            select(
+                p
+                for p in entity(Person)
+                if min(asc(p.birth_date)) >= date(1989, 10, 23)
+            )
 
 
 if __name__ == "__main__":

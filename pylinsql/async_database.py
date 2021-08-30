@@ -1,3 +1,7 @@
+"""
+SQL database connection handling with the async/await syntax.
+"""
+
 from __future__ import annotations
 
 import contextvars
@@ -21,7 +25,7 @@ from typing import (
 
 import asyncpg
 
-from .base import optional_cast
+from .base import DataClass, optional_cast
 from .core import DEFAULT, is_dataclass_type
 from .query import insert_or_select, select
 
@@ -54,6 +58,13 @@ class ConnectionParameters:
 
 
 class DatabasePool:
+    """
+    A pool of connections to a database server.
+
+    Connection pools can be used to manage a set of connections to the database. Connections are first acquired
+    from the pool, then used, and then released back to the pool.
+    """
+
     pool: asyncpg.pool.Pool
 
     def __init__(self, pool):
@@ -79,6 +90,8 @@ async def _create_pool(params: ConnectionParameters) -> asyncpg.Pool:
 async def pool(
     params: ConnectionParameters = None,
 ) -> AsyncIterator[DatabasePool]:
+    "Creates a connection pool."
+
     if params is None:
         params = ConnectionParameters()
     pool = await _create_pool(params)
@@ -96,7 +109,9 @@ class DatabaseClient:
         self.conn = conn
 
     @staticmethod
-    def _unwrap(record: asyncpg.Record):
+    def _unwrap_one(record: asyncpg.Record) -> Union[None, Any, Tuple]:
+        "Ensures that single-element records are returned as a simple object rather than a single-element tuple."
+
         if len(record) > 1:
             return tuple(record.values())
         elif len(record) > 0:
@@ -104,46 +119,67 @@ class DatabaseClient:
         else:
             return None
 
+    @staticmethod
+    def _unwrap_all(records: List[asyncpg.Record]) -> Union[List[Any], List[Tuple]]:
+        "Ensures that single-element records are returned as a simple object rather than a single-element tuple."
+
+        if not records:
+            return []
+
+        head = records[0]
+        if len(head) > 1:
+            return [tuple(record.values()) for record in records]
+        else:
+            return [record[0] for record in records]
+
     async def select_first(
-        self, sql_generator_expr: Generator, *args
-    ) -> Union[Any, Tuple]:
+        self, sql_generator_expr: Generator[T, None, None], *args
+    ) -> T:
         "Returns the first row of the resultset produced by a SELECT query."
 
         query = select(sql_generator_expr)
         stmt = await self.conn.prepare(str(query))
         logging.debug("executing query: %s", query)
-        return self._unwrap(await stmt.fetchrow(*args))
+        record: asyncpg.Record = await stmt.fetchrow(*args)
+        return self._unwrap_one(record)
 
     async def select(
-        self, sql_generator_expr: Generator, *args
-    ) -> List[asyncpg.Record]:
+        self, sql_generator_expr: Generator[T, None, None], *args
+    ) -> List[T]:
         "Returns all rows of the resultset produced by a SELECT query."
 
         query = select(sql_generator_expr)
         stmt = await self.conn.prepare(str(query))
         logging.debug("executing query: %s", query)
-        return await stmt.fetch(*args)
+        records: List[asyncpg.Record] = await stmt.fetch(*args)
+        return self._unwrap_all(records)
 
     async def insert_or_select(
-        self, insert_obj: T, sql_generator_expr: Generator, *args
-    ) -> Union[Any, Tuple]:
+        self,
+        insert_obj: DataClass[T],
+        sql_generator_expr: Generator[T, None, None],
+        *args,
+    ) -> T:
         "Queries the database and inserts a new row if the query returns an empty resultset."
 
         query = insert_or_select(insert_obj, sql_generator_expr)
         stmt = await self.conn.prepare(str(query))
 
-        # append parameters for object to insert
-        fields = dataclasses.fields(insert_obj)
+        # append parameters for SELECT part
         fetch_args = list(args)
+
+        # append parameters for INSERT part
+        fields = dataclasses.fields(insert_obj)
         for field in fields:
             value = getattr(insert_obj, field.name)
             if value is not DEFAULT:
                 fetch_args.append(value)
 
         logging.debug("executing query: %s", query)
-        return self._unwrap(await stmt.fetchrow(*fetch_args))
+        record: asyncpg.Record = await stmt.fetchrow(*fetch_args)
+        return self._unwrap_one(record)
 
-    async def insert_or_ignore(self, insert_obj: T) -> None:
+    async def insert_or_ignore(self, insert_obj: DataClass[T]) -> None:
         table_name = type(insert_obj)
         fields = dataclasses.fields(insert_obj)
         column_list = ", ".join(field.name for field in fields)
@@ -160,7 +196,7 @@ class DatabaseClient:
         stmt = await self.conn.prepare(query)
         await stmt.execute(values)
 
-    async def typed_fetch(self, typ: Type[T], query: str, *args) -> List[T]:
+    async def typed_fetch(self, typ: DataClass[T], query: str, *args) -> List[T]:
         """Maps all columns of a database record to a Python data class."""
 
         if not is_dataclass_type(typ):

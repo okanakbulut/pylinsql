@@ -3,14 +3,15 @@ Construct a SQL query from a Python expression.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
 
 import functools
 import inspect
 import sys
+from dataclasses import dataclass
 from types import CodeType
 from typing import Generator, List, Type
 
+from .base import DataClass, T
 from .builder import Context, QueryBuilder, QueryBuilderArgs
 from .core import EntityProxy, Query
 from .decompiler import CodeExpression, CodeExpressionAnalyzer
@@ -79,7 +80,7 @@ def _query_builder_args(sql_generator_expr: Generator) -> QueryBuilderArgs:
     )
 
 
-def select(sql_generator_expr: Generator) -> Query:
+def select(sql_generator_expr: Generator[T, None, None]) -> Query[T]:
     "Builds a query expression corresponding to a SELECT SQL statement."
 
     qba = _query_builder_args(sql_generator_expr)
@@ -88,7 +89,9 @@ def select(sql_generator_expr: Generator) -> Query:
     return Query(sql)
 
 
-def insert_or_select(insert_obj: T, sql_generator_expr: Generator) -> Query:
+def insert_or_select(
+    insert_obj: DataClass[T], sql_generator_expr: Generator[T, None, None]
+) -> Query[T]:
     "Builds a query expression corresponding to a combined SELECT or INSERT SQL statement."
 
     qba = _query_builder_args(sql_generator_expr)

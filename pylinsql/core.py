@@ -3,7 +3,7 @@ Construct a SQL query from a Python expression.
 """
 
 import datetime
-from typing import List, Tuple, Type, Union, overload
+from typing import Generic, List, Tuple, Type, Union, overload
 
 from .base import T, T1, T2, T3, T4, T5, T6, DataClass, is_dataclass_type
 
@@ -110,7 +110,7 @@ def avg(_: T) -> T:
     ...
 
 
-def count(_: T) -> T:
+def count(_: T) -> int:
     "Aggregation function: Number of items in set."
     ...
 
@@ -135,7 +135,7 @@ def avg_if(expression: T, condition: bool) -> T:
     ...
 
 
-def count_if(expression: T, condition: bool) -> T:
+def count_if(expression: T, condition: bool) -> int:
     "Conditional aggregation function: COUNT(expression) FILTER (WHERE condition)."
     ...
 
@@ -221,7 +221,7 @@ class _DefaultValue:
 DEFAULT = _DefaultValue
 
 
-class Query:
+class Query(Generic[T]):
     "A query constructed from a Python generator expression."
 
     def __init__(self, sql):
@@ -229,3 +229,7 @@ class Query:
 
     def __str__(self) -> str:
         return self.sql
+
+
+class QueryTypeError(TypeError):
+    pass

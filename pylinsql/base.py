@@ -1,6 +1,15 @@
 import dataclasses
 import typing
-from typing import Any, Dict, Optional, Protocol, Type, TypeVar, Union, overload
+from typing import (
+    Any,
+    Dict,
+    Optional,
+    Protocol,
+    Type,
+    TypeVar,
+    Union,
+    overload,
+)
 
 T = TypeVar("T")
 T1 = TypeVar("T1")
@@ -49,6 +58,20 @@ def unwrap_optional_type(
     ...
 
 
+@overload
+def unwrap_optional_type(
+    typ: Type[Union[None, T1, T2, T3, T4, T5]]
+) -> Type[Union[T1, T2, T3, T4, T5]]:
+    ...
+
+
+@overload
+def unwrap_optional_type(
+    typ: Type[Union[None, T1, T2, T3, T4]]
+) -> Type[Union[T1, T2, T3, T4]]:
+    ...
+
+
 def unwrap_optional_type(typ: Type[Optional[T]]) -> Type[T]:
     "Extracts the type qualified as optional (e.g. returns T for Optional[T])."
 
@@ -71,7 +94,7 @@ def optional_cast(typ: Type[T], value: Optional[Any]) -> Optional[T]:
         return typ(value)
 
 
-class DataClass(Protocol):
+class DataClass(Protocol[T]):
     "Identifies a type as a dataclass type."
 
     __dataclass_fields__: Dict

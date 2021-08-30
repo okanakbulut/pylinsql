@@ -57,13 +57,13 @@ select(
     for p in entity(Person)
     if p.given_name == "John"
     and p.family_name != "Doe"
-    or (2021 - p.birth_year >= 18)
+    or year(p.birth_date) >= 1982
 )
 ```
 ```sql
 SELECT *
 FROM "Person" AS p
-WHERE p.given_name = 'John' AND p.family_name <> 'Doe' OR 2021 - p.birth_year >= 18
+WHERE p.given_name = 'John' AND p.family_name <> 'Doe' OR EXTRACT(YEAR FROM p.birth_date) >= 1982
 ```
 
 The conditional part also accepts special functions `inner_join`, `left_join`, `right_join`, etc. to create join expressions in SQL. These special functions are only allowed in the condition part of the generator expression but not elsewhere. You can combine several join conditions with Python's `and`.
@@ -85,16 +85,16 @@ FROM "Person" AS p
 You can also use aggregation functions. Expressions that are not aggregated automatically go into the `GROUP BY` clause. If you have a condition that involves an aggregated expression, it becomes part of the `HAVING` clause.
 ```python
 select(
-    (a.city, min(p.birth_year))
+    (a.city, min(p.birth_date))
     for p, a in entity(Person, Address)
-    if inner_join(p.perm_address_id, a.id) and min(p.birth_year) >= 1980
+    if inner_join(p.perm_address_id, a.id) and min(p.birth_date) >= date(1989, 10, 23)
 )
 ```
 ```sql
-SELECT a.city, MIN(p.birth_year)
+SELECT a.city, MIN(p.birth_date)
 FROM "Person" AS p INNER JOIN "Address" AS a ON p.perm_address_id = a.id
 GROUP BY a.city
-HAVING MIN(p.birth_year) >= 1980
+HAVING MIN(p.birth_date) >= MAKE_DATE(1989, 10, 23)
 ```
 
 ## Code generator for data classes
