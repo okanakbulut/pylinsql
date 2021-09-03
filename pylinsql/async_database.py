@@ -4,11 +4,11 @@ SQL database connection handling with the async/await syntax.
 
 from __future__ import annotations
 
-import contextvars
 import dataclasses
 import logging
 import os
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from typing import (
     Any,
     AsyncIterator,
@@ -32,7 +32,7 @@ from .query import insert_or_select, select
 T = TypeVar("T")
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(eq=True, frozen=True)
 class ConnectionParameters:
     "Encapsulates database connection parameters."
 
@@ -53,7 +53,7 @@ class ConnectionParameters:
     )
     command_timeout: int = 60
 
-    def as_dict(self):
+    def as_dict(self) -> Dict[str, Union[str, int]]:
         return dataclasses.asdict(self)
 
 
@@ -78,12 +78,14 @@ class DatabasePool:
         finally:
             await self.pool.release(conn)
 
-    async def release(self):
+    async def release(self) -> None:
+        "Close all connections in the pool."
+
         return await self.pool.close()
 
 
 async def _create_pool(params: ConnectionParameters) -> asyncpg.Pool:
-    return await asyncpg.create_pool(**params.as_dict())
+    return await asyncpg.create_pool(min_size=1, max_size=8, **params.as_dict())
 
 
 @asynccontextmanager
@@ -303,7 +305,47 @@ async def connection(
         await conn.close()
 
 
-_connection_pools = contextvars.ContextVar("pool")
+_shared_pool = ContextVar("shared_pool", default={})
+
+
+def _get_shared_pool() -> Dict[ConnectionParameters, DatabasePool]:
+    """
+    Returns a connection pool shared across the same asynchronous execution context.
+
+    When an asynchronous task is called from another asynchronous task, the context is copied. However, only a shallow
+    copy is made. We deliberately use a mutable object (a dictionary) as the context variable to ensure that changes
+    made in child tasks are reflected in the parent (including the root ancestor) task. We assign a default value to
+    the context variable such that the object spawns in the root ancestor task.
+
+    As a result, a new connection pool is created for each set of connection parameters the first time a shared
+    connection pool is requested. This connection pool is shared with all other asynchronous functions scheduled
+    in the same asynchronous execution context.
+    """
+
+    return _shared_pool.get()
+
+
+class SharedDatabasePool(DatabasePool):
+    params: ConnectionParameters
+
+    def __init__(self, pool: DatabasePool, params: ConnectionParameters):
+        super().__init__(pool)
+        self.params = params
+        _get_shared_pool()[params] = self
+
+    def __del__(self):
+        _get_shared_pool().pop(self.params, None)
+
+    @classmethod
+    async def get_or_create(cls, params: ConnectionParameters) -> SharedDatabasePool:
+        pool = _get_shared_pool().get(params, None)
+        if pool is None:
+            pool = SharedDatabasePool(await _create_pool(params), params)
+        return pool
+
+    async def release(self) -> None:
+        _get_shared_pool().pop(self.params, None)
+        return await super().release()
 
 
 async def shared_pool(params: ConnectionParameters = None) -> DatabasePool:
@@ -312,17 +354,7 @@ async def shared_pool(params: ConnectionParameters = None) -> DatabasePool:
     if params is None:
         params = ConnectionParameters()
 
-    pools: Dict[ConnectionParameters, DatabasePool] = _connection_pools.get(None)
-    if pools is None:
-        pools = {}
-        _connection_pools.set(pools)
-
-    pool: DatabasePool = pools.get(params, None)
-    if pool is None:
-        pool = DatabasePool(await _create_pool(params))
-        pools[params] = pool
-
-    return pool
+    return await SharedDatabasePool.get_or_create(params)
 
 
 class DataAccess:

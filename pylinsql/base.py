@@ -36,42 +36,6 @@ def is_optional_type(typ: Type[Any]) -> bool:
     return False
 
 
-@overload
-def unwrap_optional_type(typ: Type[Optional[T]]) -> Type[T]:
-    ...
-
-
-@overload
-def unwrap_optional_type(typ: Type[Union[None, T1, T2]]) -> Type[Union[T1, T2]]:
-    ...
-
-
-@overload
-def unwrap_optional_type(typ: Type[Union[None, T1, T2, T3]]) -> Type[Union[T1, T2, T3]]:
-    ...
-
-
-@overload
-def unwrap_optional_type(
-    typ: Type[Union[None, T1, T2, T3, T4]]
-) -> Type[Union[T1, T2, T3, T4]]:
-    ...
-
-
-@overload
-def unwrap_optional_type(
-    typ: Type[Union[None, T1, T2, T3, T4, T5]]
-) -> Type[Union[T1, T2, T3, T4, T5]]:
-    ...
-
-
-@overload
-def unwrap_optional_type(
-    typ: Type[Union[None, T1, T2, T3, T4]]
-) -> Type[Union[T1, T2, T3, T4]]:
-    ...
-
-
 def unwrap_optional_type(typ: Type[Optional[T]]) -> Type[T]:
     "Extracts the type qualified as optional (e.g. returns T for Optional[T])."
 

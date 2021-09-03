@@ -3,7 +3,8 @@ import os.path
 import unittest
 from dataclasses import dataclass
 
-from pylinsql.async_database import DataAccess, connection
+import pylinsql.async_database as async_database
+from pylinsql.async_database import DataAccess
 from pylinsql.core import DEFAULT, entity
 
 from .database import Person
@@ -25,8 +26,12 @@ class DatabaseTestCase(unittest.IsolatedAsyncioTestCase):
 
 
 class TestDatabaseConnection(DatabaseTestCase):
+    async def asyncTearDown(self):
+        pool = await async_database.shared_pool()
+        await pool.release()
+
     async def test_simple_query(self):
-        async with connection() as conn:
+        async with async_database.connection() as conn:
             query = """
                 WITH sample (id, value) AS (VALUES
                     (1, 'first'),
@@ -39,7 +44,7 @@ class TestDatabaseConnection(DatabaseTestCase):
             self.assertNotEmpty(values)
 
     async def test_parameterized_query(self):
-        async with connection() as conn:
+        async with async_database.connection() as conn:
             query = """
                 WITH sample (id, value) AS (VALUES
                     (1, 'first'),
@@ -52,6 +57,24 @@ class TestDatabaseConnection(DatabaseTestCase):
             self.assertNotEmpty(values)
             values = await conn.typed_fetch(Record, query, "fourth")
             self.assertEmpty(values)
+
+    async def test_pool(self):
+        async with async_database.pool() as pool:
+            for _ in range(0, 25):
+                async with pool.connection() as connection:
+                    items = await connection.raw_fetch("SELECT 42 AS value")
+                    self.assertEqual(len(items), 1)
+                    for item in items:
+                        self.assertEqual(item["value"], 42)
+
+    async def test_shared_pool(self):
+        pool = await async_database.shared_pool()
+        for _ in range(0, 25):
+            async with pool.connection() as connection:
+                items = await connection.raw_fetch("SELECT 42 AS value")
+                self.assertEqual(len(items), 1)
+                for item in items:
+                    self.assertEqual(item["value"], 42)
 
     async def test_data_access(self):
         access = DataAccess()
@@ -66,14 +89,14 @@ class TestDataTransfer(DatabaseTestCase):
     async def asyncSetUp(self):
         with open(os.path.join(os.path.dirname(__file__), "database.sql"), "r") as f:
             sql = f.read()
-        async with connection() as conn:
+        async with async_database.connection() as conn:
             await conn.raw_execute(sql)
 
     async def asyncTearDown(self):
         pass
 
     async def test_select(self):
-        async with connection() as conn:
+        async with async_database.connection() as conn:
             results = await conn.select(p for p in entity(Person))
             self.assertNotEmpty(results)
 
