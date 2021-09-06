@@ -22,7 +22,7 @@ from pylinsql.core import (
 )
 from pylinsql.query import cache_info, insert_or_select, select
 
-from .database import Address, Person
+from tests.database import Address, Person
 
 
 class TestLanguageIntegratedSQL(unittest.TestCase):

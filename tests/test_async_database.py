@@ -7,7 +7,8 @@ import pylinsql.async_database as async_database
 from pylinsql.async_database import DataAccess
 from pylinsql.core import DEFAULT, entity
 
-from .database import Person
+from tests.database import Person
+from tests.database_test_case import DatabaseTestCase
 
 
 @dataclass
@@ -17,21 +18,13 @@ class Record:
     view_position: str
 
 
-class DatabaseTestCase(unittest.IsolatedAsyncioTestCase):
-    def assertEmpty(self, obj):
-        self.assertFalse(obj)
-
-    def assertNotEmpty(self, obj):
-        self.assertTrue(obj)
-
-
 class TestDatabaseConnection(DatabaseTestCase):
     async def asyncTearDown(self):
-        pool = await async_database.shared_pool()
+        pool = await async_database.shared_pool(self.params)
         await pool.release()
 
     async def test_simple_query(self):
-        async with async_database.connection() as conn:
+        async with async_database.connection(self.params) as conn:
             query = """
                 WITH sample (id, value) AS (VALUES
                     (1, 'first'),
@@ -44,7 +37,7 @@ class TestDatabaseConnection(DatabaseTestCase):
             self.assertNotEmpty(values)
 
     async def test_parameterized_query(self):
-        async with async_database.connection() as conn:
+        async with async_database.connection(self.params) as conn:
             query = """
                 WITH sample (id, value) AS (VALUES
                     (1, 'first'),
@@ -59,7 +52,7 @@ class TestDatabaseConnection(DatabaseTestCase):
             self.assertEmpty(values)
 
     async def test_pool(self):
-        async with async_database.pool() as pool:
+        async with async_database.pool(self.params) as pool:
             for _ in range(0, 25):
                 async with pool.connection() as connection:
                     items = await connection.raw_fetch("SELECT 42 AS value")
@@ -68,7 +61,7 @@ class TestDatabaseConnection(DatabaseTestCase):
                         self.assertEqual(item["value"], 42)
 
     async def test_shared_pool(self):
-        pool = await async_database.shared_pool()
+        pool = await async_database.shared_pool(self.params)
         for _ in range(0, 25):
             async with pool.connection() as connection:
                 items = await connection.raw_fetch("SELECT 42 AS value")
@@ -77,7 +70,7 @@ class TestDatabaseConnection(DatabaseTestCase):
                     self.assertEqual(item["value"], 42)
 
     async def test_data_access(self):
-        access = DataAccess()
+        access = DataAccess(self.params)
         async with access.get_connection() as connection:
             items = await connection.raw_fetch("SELECT 42 AS value")
             self.assertEqual(len(items), 1)
@@ -89,14 +82,14 @@ class TestDataTransfer(DatabaseTestCase):
     async def asyncSetUp(self):
         with open(os.path.join(os.path.dirname(__file__), "database.sql"), "r") as f:
             sql = f.read()
-        async with async_database.connection() as conn:
+        async with async_database.connection(self.params) as conn:
             await conn.raw_execute(sql)
 
     async def asyncTearDown(self):
         pass
 
     async def test_select(self):
-        async with async_database.connection() as conn:
+        async with async_database.connection(self.params) as conn:
             results = await conn.select(p for p in entity(Person))
             self.assertNotEmpty(results)
 

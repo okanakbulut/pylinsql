@@ -25,7 +25,7 @@ from typing import (
 
 import asyncpg
 
-from .base import DataClass, optional_cast
+from .base import DataClass, cast_if_not_none
 from .core import DEFAULT, is_dataclass_type
 from .query import insert_or_select, select
 
@@ -213,13 +213,13 @@ class DatabaseClient:
         """Maps a single column of a database record to a Python class."""
 
         records = await self.conn.fetch(query, *args)
-        return [optional_cast(typ, record[column]) for record in records]
+        return [cast_if_not_none(typ, record[column]) for record in records]
 
     async def typed_fetch_value(
         self, typ: Type[T], query: str, *args, column: int = 0
     ) -> T:
         value = await self.conn.fetchval(query, *args, column=column)
-        return optional_cast(typ, value)
+        return cast_if_not_none(typ, value)
 
     def _typed_fetch(self, typ: Type[T], records: List[asyncpg.Record]) -> List[T]:
         results = []

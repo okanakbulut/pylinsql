@@ -8,7 +8,6 @@ from typing import (
     Type,
     TypeVar,
     Union,
-    overload,
 )
 
 T = TypeVar("T")
@@ -49,7 +48,7 @@ def unwrap_optional_type(typ: Type[Optional[T]]) -> Type[T]:
     ]
 
 
-def optional_cast(typ: Type[T], value: Optional[Any]) -> Optional[T]:
+def cast_if_not_none(typ: Type[T], value: Optional[Any]) -> Optional[T]:
     "Coerces an optional value into the specified type unless the value is None."
 
     if value is None:

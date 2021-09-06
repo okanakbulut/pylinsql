@@ -4,19 +4,21 @@ import datetime
 import io
 import keyword
 import sys
-from dataclasses import Field, dataclass, MISSING
+from dataclasses import MISSING, Field, dataclass
 from typing import Any, Dict, List, Optional, TextIO, Tuple, Type, TypeVar, Union
 
 from . import async_database
 from .async_database import ConnectionParameters, DatabaseClient
-from .base import is_optional_type, optional_cast, unwrap_optional_type
+from .base import cast_if_not_none, is_optional_type, unwrap_optional_type
 from .core import DataClass
 from .schema import ForeignKey, PrimaryKey, Reference
 
 T = TypeVar("T")
 
 
-def _db_type_to_py_type(db_type: str, nullable: bool) -> type:
+def _db_type_to_py_type(
+    db_type: str, is_nullable: bool, has_default: bool
+) -> Tuple[type, type]:
     "Maps a PostgreSQL type to a Python type."
 
     if db_type in ["character varying", "text"]:
@@ -40,10 +42,14 @@ def _db_type_to_py_type(db_type: str, nullable: bool) -> type:
     else:
         raise RuntimeError(f"unrecognized database type: {db_type}")
 
-    if nullable:
-        return Optional[py_type]
+    if is_nullable and not has_default:
+        outer_type = Optional[py_type]
+        value_type = py_type
     else:
-        return py_type
+        outer_type = py_type
+        value_type = py_type
+
+    return outer_type, value_type
 
 
 @dataclass
@@ -178,11 +184,16 @@ class _CatalogSchemaBuilder:
         columns = await self.conn.raw_fetch(query, self.db_schema, db_table)
         column_schemas = {}
         for column in columns:
-            typ = _db_type_to_py_type(column["data_type"], column["is_nullable"])
+            outer_type, value_type = _db_type_to_py_type(
+                column["data_type"],
+                column["is_nullable"],
+                column["column_default"] is not None,
+            )
+
             column_schema = ColumnSchema(
                 name=column["column_name"],
-                data_type=typ,
-                default=optional_cast(typ, column["column_default"]),
+                data_type=outer_type,
+                default=cast_if_not_none(value_type, column["column_default"]),
                 description=column["description"],
             )
             column_schemas[column_schema.name] = column_schema
@@ -357,7 +368,7 @@ def dataclasses_to_stream(types: List[DataClass], target: TextIO):
             print(file=target)
 
         # primary key
-        if typ.primary_key is not None:
+        if getattr(typ, "primary_key", None) is not None:
             print(f"    primary_key = {repr(typ.primary_key)}", file=target)
             print(file=target)
 
