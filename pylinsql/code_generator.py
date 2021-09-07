@@ -5,12 +5,11 @@ import io
 import keyword
 import sys
 from dataclasses import MISSING, Field, dataclass
-from typing import Any, Dict, List, Optional, TextIO, Tuple, Type, TypeVar, Union
+from typing import Any, Dict, List, Optional, TextIO, Tuple, TypeVar
 
 from . import async_database
 from .async_database import ConnectionParameters, DatabaseClient
-from .base import cast_if_not_none, is_optional_type, unwrap_optional_type
-from .core import DataClass
+from .base import DataClass, cast_if_not_none, is_optional_type, unwrap_optional_type
 from .schema import ForeignKey, PrimaryKey, Reference
 
 T = TypeVar("T")
@@ -114,13 +113,87 @@ class _CatalogSchemaBuilder:
     async def get_catalog_schema(self) -> CatalogSchema:
         "Retrieves metadata for the current catalog."
 
+        # query table names in dependency order
         query = """
+            WITH RECURSIVE dependencies(
+                    depth,
+                    parent_catalog,
+                    parent_schema,
+                    parent_name,
+                    child_catalog,
+                    child_schema,
+                    child_name
+            ) AS (
+                -- tables that have no foreign keys
+                SELECT
+                    1 AS depth,
+                    pkey.table_catalog,
+                    pkey.table_schema,
+                    pkey.table_name,
+                    tab.table_catalog,
+                    tab.table_schema,
+                    tab.table_name
+                FROM
+                    information_schema.referential_constraints AS ref_con
+                        INNER JOIN information_schema.key_column_usage AS pkey ON
+                            ref_con.unique_constraint_catalog = pkey.constraint_catalog AND
+                            ref_con.unique_constraint_schema = pkey.constraint_schema AND
+                            ref_con.unique_constraint_name = pkey.constraint_name
+                        INNER JOIN information_schema.key_column_usage AS fkey ON
+                            ref_con.constraint_catalog = fkey.constraint_catalog AND
+                            ref_con.constraint_schema = fkey.constraint_schema AND
+                            ref_con.constraint_name = fkey.constraint_name
+                        RIGHT JOIN information_schema.tables AS tab ON
+                            tab.table_catalog = fkey.table_catalog AND
+                            tab.table_schema = fkey.table_schema AND
+                            tab.table_name = fkey.table_name
+                WHERE
+                    tab.table_catalog = CURRENT_CATALOG AND
+                    tab.table_schema = $1 AND
+                    pkey.table_catalog IS NULL AND
+                    pkey.table_schema IS NULL AND
+                    pkey.table_name IS NULL
+            UNION ALL
+                -- tables that only depend on tables returned by the previous recursion steps
+                SELECT
+                    dep.depth + 1,
+                    dep.child_catalog,
+                    dep.child_schema,
+                    dep.child_name,
+                    tab.table_catalog,
+                    tab.table_schema,
+                    tab.table_name
+                FROM
+                    information_schema.referential_constraints AS ref_con
+                        INNER JOIN information_schema.key_column_usage AS pkey ON
+                            ref_con.unique_constraint_catalog = pkey.constraint_catalog AND
+                            ref_con.unique_constraint_schema = pkey.constraint_schema AND
+                            ref_con.unique_constraint_name = pkey.constraint_name
+                        INNER JOIN information_schema.key_column_usage AS fkey ON
+                            ref_con.constraint_catalog = fkey.constraint_catalog AND
+                            ref_con.constraint_schema = fkey.constraint_schema AND
+                            ref_con.constraint_name = fkey.constraint_name
+                        INNER JOIN information_schema.tables AS tab ON
+                            tab.table_catalog = fkey.table_catalog AND
+                            tab.table_schema = fkey.table_schema AND
+                            tab.table_name = fkey.table_name
+                        INNER JOIN dependencies AS dep ON
+                            dep.child_catalog = pkey.table_catalog AND
+                            dep.child_schema = pkey.table_schema AND
+                            dep.child_name = pkey.table_name
+                WHERE
+                    tab.table_catalog = CURRENT_CATALOG AND
+                    tab.table_schema = $1
+            )
             SELECT
-                table_name
+                child_name
             FROM
-                information_schema.tables
-            WHERE
-                table_catalog = CURRENT_CATALOG AND table_schema = $1
+                dependencies
+            GROUP BY
+                child_name
+            ORDER BY
+                -- minimum depth reflects the first encounter of a table (tables may depend on several tables)
+                MIN(depth), child_name
         """
         tables = await self.conn.typed_fetch_column(str, query, self.db_schema)
         table_schemas = [await self._get_table_schema(table) for table in tables]

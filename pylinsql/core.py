@@ -5,7 +5,7 @@ Construct a SQL query from a Python expression.
 import datetime
 from typing import Generic, List, Tuple, Type, Union, overload
 
-from .base import T, T1, T2, T3, T4, T5, T6, DataClass, is_dataclass_type
+from .base import T, T1, T2, T3, T4, T5, T6, is_dataclass_type
 
 
 class EntityProxy:
@@ -66,7 +66,7 @@ def is_primitive_type(typ):
     return isinstance(typ, (bool, int, str))
 
 
-def entity(*cls: DataClass) -> List:
+def entity(*cls: Type[T]) -> List:
     "Represents the list of entities (a.k.a. tables in SQL) to query from."
 
     if not all(is_dataclass_type(typ) for typ in cls):

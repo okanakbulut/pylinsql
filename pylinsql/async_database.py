@@ -198,7 +198,7 @@ class DatabaseClient:
         stmt = await self.conn.prepare(query)
         await stmt.execute(values)
 
-    async def typed_fetch(self, typ: DataClass[T], query: str, *args) -> List[T]:
+    async def typed_fetch(self, typ: T, query: str, *args) -> List[T]:
         """Maps all columns of a database record to a Python data class."""
 
         if not is_dataclass_type(typ):
