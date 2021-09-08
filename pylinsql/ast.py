@@ -101,6 +101,9 @@ class AttributeAccess(Expression):
     base: Expression
     attr_name: str
 
+    def negate(self) -> Expression:
+        return Negation(self)
+
     def __str__(self):
         return f"{self.base}.{self.attr_name}"
 
@@ -111,6 +114,9 @@ class IndexAccess(Expression):
 
     base: Expression
     index: int
+
+    def negate(self) -> Expression:
+        return Negation(self)
 
     def __str__(self):
         return f"{self.base}[{self.index}]"

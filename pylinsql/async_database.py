@@ -12,12 +12,12 @@ from contextvars import ContextVar
 from typing import (
     Any,
     AsyncIterator,
+    ClassVar,
     Dict,
     Generator,
     Iterable,
     List,
     Optional,
-    Tuple,
     Type,
     TypeVar,
     Union,
@@ -52,9 +52,16 @@ class ConnectionParameters:
         default_factory=lambda: int(os.getenv("PSQL_PORT", "5432"))
     )
     command_timeout: int = 60
+    schema: str = dataclasses.field(
+        default_factory=lambda: os.getenv("PSQL_SCHEMA", "public")
+    )
 
-    def as_dict(self) -> Dict[str, Union[str, int]]:
-        return dataclasses.asdict(self)
+    def as_kwargs(self) -> Dict[str, Union[str, int]]:
+        "Connection string parameters as keyword arguments."
+
+        d = dataclasses.asdict(self)
+        del d["schema"]
+        return d
 
 
 class DatabasePool:
@@ -84,8 +91,53 @@ class DatabasePool:
         return await self.pool.close()
 
 
+class SchemaConnection(asyncpg.Connection):
+    "An asyncpg connection that automatically establishes a default schema (search path)."
+
+    default_schema: ClassVar[str]
+    initialized: bool = False
+
+    def __init_subclass__(cls, /, default_schema, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls.default_schema = default_schema
+
+    async def _initialize(self) -> None:
+        if not self.initialized:
+            await super().execute(f"SET search_path to '{type(self).default_schema}'")
+            self.initialized = True
+
+    async def prepare(self, query, *, timeout=None, record_class=None):
+        await self._initialize()
+        return await super().prepare(query, timeout=timeout, record_class=record_class)
+
+    async def execute(self, query: str, *args, timeout: float = None) -> str:
+        await self._initialize()
+        return await super().execute(query, *args, timeout=timeout)
+
+    async def executemany(self, command: str, args, *, timeout: float = None):
+        await self._initialize()
+        return await super().executemany(command, args, timeout=timeout)
+
+
+def _get_connection_type(params: ConnectionParameters) -> SchemaConnection:
+    class_name = f"Connection{hash(params)}"
+    class_type = type(class_name, (SchemaConnection,), {}, default_schema=params.schema)
+    return class_type
+
+
+async def _create_connection(params: ConnectionParameters) -> asyncpg.Connection:
+    return await asyncpg.connect(
+        connection_class=_get_connection_type(params), **params.as_kwargs()
+    )
+
+
 async def _create_pool(params: ConnectionParameters) -> asyncpg.Pool:
-    return await asyncpg.create_pool(min_size=1, max_size=8, **params.as_dict())
+    return await asyncpg.create_pool(
+        min_size=1,
+        max_size=8,
+        connection_class=_get_connection_type(params),
+        **params.as_kwargs(),
+    )
 
 
 @asynccontextmanager
@@ -323,7 +375,7 @@ async def connection(
 ) -> AsyncIterator[DatabaseConnection]:
     if params is None:
         params = ConnectionParameters()
-    conn = await asyncpg.connect(**params.as_dict())
+    conn = await _create_connection(params)
     try:
         yield DatabaseConnection(conn)
     finally:
