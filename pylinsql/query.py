@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import os.path
 import sys
 from dataclasses import dataclass
 from types import CodeType
@@ -64,11 +65,16 @@ def _query_builder_args(sql_generator_expr: Generator) -> QueryBuilderArgs:
     code_expression = _analyze_expression(sql_generator_expr.gi_frame.f_code)
 
     # get reference to caller's frame
-    caller = sys._getframe(2)
-    closure_vars = caller.f_locals
+    package_root = os.path.dirname(__file__)
+    caller = frame = sys._getframe(2)
+    while frame:
+        if not frame.f_code.co_filename.startswith(package_root):
+            caller = frame
+            break
+        frame = frame.f_back
 
     # build query context
-    context = Context(code_expression.local_vars, closure_vars)
+    context = Context(code_expression.local_vars, caller.f_locals, caller.f_globals)
     source_arg = sql_generator_expr.gi_frame.f_locals[".0"]
 
     # build SQL query
@@ -85,8 +91,7 @@ def select(sql_generator_expr: Generator[T, None, None]) -> Query[T]:
 
     qba = _query_builder_args(sql_generator_expr)
     builder = QueryBuilder()
-    sql = builder.select(qba)
-    return Query(sql)
+    return builder.select(qba)
 
 
 def insert_or_select(
@@ -96,5 +101,4 @@ def insert_or_select(
 
     qba = _query_builder_args(sql_generator_expr)
     builder = QueryBuilder()
-    sql = builder.insert_or_select(qba, insert_obj)
-    return Query(sql)
+    return builder.insert_or_select(qba, insert_obj)

@@ -5,9 +5,9 @@ from dataclasses import dataclass
 
 import pylinsql.async_database as async_database
 from pylinsql.async_database import DataAccess
-from pylinsql.core import DEFAULT, entity
+from pylinsql.core import DEFAULT, entity, inner_join
 
-from tests.database import Person
+from tests.database import Address, Person, PersonCity
 from tests.database_test_case import DatabaseTestCase
 
 
@@ -96,13 +96,21 @@ class TestDataTransfer(DatabaseTestCase):
             result = await conn.select_first(p for p in entity(Person))
             self.assertIsNotNone(result)
 
+            result = await conn.select_first(
+                PersonCity(p.family_name, p.given_name, a.city)
+                for p, a in entity(Person, Address)
+                if inner_join(p.perm_address_id, a.id)
+            )
+            self.assertIsNotNone(result)
+            self.assertIsInstance(result, PersonCity)
+
             p = await conn.insert_or_select(
                 Person(
                     id=DEFAULT,
                     birth_date=datetime.datetime.now(),
                     family_name="Alpha",
                     given_name="Omega",
-                    perm_address_id=None,
+                    perm_address_id=1,
                     temp_address_id=None,
                 ),
                 (

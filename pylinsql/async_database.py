@@ -111,28 +111,53 @@ class DatabaseClient:
         self.conn = conn
 
     @staticmethod
-    def _unwrap_one(record: asyncpg.Record) -> Union[None, Any, Tuple]:
-        "Ensures that single-element records are returned as a simple object rather than a single-element tuple."
+    def _unwrap_one(target_type: Type[T], record: asyncpg.Record) -> Optional[T]:
+        "Converts a result record into the expected type."
 
-        if len(record) > 1:
-            return tuple(record.values())
-        elif len(record) > 0:
-            return record[0]
-        else:
+        if record is None:
             return None
 
+        if target_type is None:
+            if len(record) > 1:
+                return tuple(record.values())
+            else:
+                return record[0]
+
+        elif is_dataclass_type(target_type):
+            # initialize data class with parameters taken from query result
+            return target_type(*record.values())
+
+        elif target_type is list or target_type is set or target_type is tuple:
+            # initialize collection class with iterator
+            return target_type(record.values())
+
+        else:
+            raise TypeError(f"unsupported target type {target_type}")
+
     @staticmethod
-    def _unwrap_all(records: List[asyncpg.Record]) -> Union[List[Any], List[Tuple]]:
-        "Ensures that single-element records are returned as a simple object rather than a single-element tuple."
+    def _unwrap_all(target_type: Type[T], records: List[asyncpg.Record]) -> List[T]:
+        "Converts a list of records into a list of the expected type."
 
         if not records:
             return []
 
-        head = records[0]
-        if len(head) > 1:
-            return [tuple(record.values()) for record in records]
+        if target_type is None:
+            head = records[0]
+            if len(head) > 1:
+                return [tuple(record.values()) for record in records]
+            else:
+                return [record[0] for record in records]
+
+        elif is_dataclass_type(target_type):
+            # initialize data class with parameters taken from query result
+            return [target_type(*record.values()) for record in records]
+
+        elif isinstance(target_type, (list, tuple, set)):
+            # initialize collection class with iterator
+            return [target_type(record.values()) for record in records]
+
         else:
-            return [record[0] for record in records]
+            raise TypeError(f"unsupported target type {target_type}")
 
     async def select_first(
         self, sql_generator_expr: Generator[T, None, None], *args
@@ -143,7 +168,7 @@ class DatabaseClient:
         stmt = await self.conn.prepare(str(query))
         logging.debug("executing query: %s", query)
         record: asyncpg.Record = await stmt.fetchrow(*args)
-        return self._unwrap_one(record)
+        return self._unwrap_one(query.typ, record)
 
     async def select(
         self, sql_generator_expr: Generator[T, None, None], *args
@@ -154,7 +179,7 @@ class DatabaseClient:
         stmt = await self.conn.prepare(str(query))
         logging.debug("executing query: %s", query)
         records: List[asyncpg.Record] = await stmt.fetch(*args)
-        return self._unwrap_all(records)
+        return self._unwrap_all(query.typ, records)
 
     async def insert_or_select(
         self,
@@ -179,7 +204,7 @@ class DatabaseClient:
 
         logging.debug("executing query: %s", query)
         record: asyncpg.Record = await stmt.fetchrow(*fetch_args)
-        return self._unwrap_one(record)
+        return self._unwrap_one(query.typ, record)
 
     async def insert_or_ignore(self, insert_obj: DataClass[T]) -> None:
         table_name = type(insert_obj)

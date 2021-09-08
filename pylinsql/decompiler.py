@@ -134,6 +134,12 @@ class _Disassembler:
     def JUMP_ABSOLUTE(self, target):
         pass
 
+    def JUMP_IF_FALSE_OR_POP(self, target):
+        raise NotImplementedError()
+
+    def JUMP_IF_TRUE_OR_POP(self, target):
+        raise NotImplementedError()
+
     def POP_JUMP_IF_FALSE(self, target):
         self.expr = self.stack.pop()
         self.on_true = None

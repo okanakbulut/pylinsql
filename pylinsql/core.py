@@ -224,7 +224,11 @@ DEFAULT = _DefaultValue
 class Query(Generic[T]):
     "A query constructed from a Python generator expression."
 
-    def __init__(self, sql):
+    typ: type
+    sql: str
+
+    def __init__(self, typ: type, sql: str):
+        self.typ = typ
         self.sql = sql
 
     def __str__(self) -> str:

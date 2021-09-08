@@ -22,7 +22,7 @@ from pylinsql.core import (
 )
 from pylinsql.query import cache_info, insert_or_select, select
 
-from tests.database import Address, Person
+from tests.database import Address, Person, PersonCity
 
 
 class TestLanguageIntegratedSQL(unittest.TestCase):
@@ -80,6 +80,18 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
             ),
             """SELECT * FROM "Person" AS p INNER JOIN "Address" AS a1 ON p.perm_address_id = a1.id LEFT JOIN "Address" AS a2 ON p.temp_address_id = a2.id WHERE a1.city <> 'London' OR a2.city <> 'Zürich'""",
         )
+
+    def test_select_dataclass(self):
+        query = select(
+            PersonCity(p.family_name, p.given_name, a.city)
+            for p, a in entity(Person, Address)
+            if inner_join(p.perm_address_id, a.id)
+        )
+        self.assertQueryIs(
+            query,
+            """SELECT p.family_name, p.given_name, a.city FROM "Person" AS p INNER JOIN "Address" AS a ON p.perm_address_id = a.id""",
+        )
+        self.assertEqual(query.typ, PersonCity)
 
     def test_subquery(self):
         subquery_expr = select(a.id for a in entity(Address) if a.city == "London")

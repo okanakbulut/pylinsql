@@ -15,7 +15,7 @@ from datetime import date, time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .ast import *
-from .base import is_dataclass_instance
+from .base import DataClass, is_dataclass_instance
 from .core import *
 
 _aggregate_functions = Dispatcher([avg, count, max, min, sum])
@@ -490,11 +490,12 @@ class _QueryVisitor:
         if call.is_dispatchable(now):
             return "CURRENT_TIMESTAMP"
 
-        if call.get_function_name() == date.__name__:
+        fn_name = call.get_function_name()
+        if fn_name == date.__name__:
             args = ", ".join([self.visit(arg) for arg in call.args])
             return f"MAKE_DATE({args})"
 
-        if call.get_function_name() == time.__name__:
+        if fn_name == time.__name__:
             args = ", ".join([self.visit(arg) for arg in call.args])
             return f"MAKE_TIME({args})"
 
@@ -544,29 +545,37 @@ class _QueryVisitor:
 class Context:
     local_vars: List[str]
     closure_vars: Dict[str, Any]
+    global_vars: Dict[str, Any]
 
 
 class _SelectExtractor:
-    query_visitor: _QueryVisitor
+    _query_visitor: _QueryVisitor
+
+    return_type: Type = None
     local_vars: List[str]
     select: List[str]
     group_by: List[str]
     order_by: List[str]
-    has_aggregate: bool
+    has_aggregate: bool = False
 
-    def __init__(self, query_visitor: _QueryVisitor, local_vars: List[str]):
-        self.query_visitor = query_visitor
+    def __init__(
+        self,
+        query_visitor: _QueryVisitor,
+        local_vars: List[str],
+        global_vars: Dict[str, Any],
+    ):
+        self._query_visitor = query_visitor
         self.local_vars = local_vars
+        self.global_vars = global_vars
         self.select = []
         self.group_by = []
         self.order_by = []
-        self.has_aggregate = False
 
-    def visit(self, expr: Expression):
+    def visit(self, expr: Expression) -> None:
         self._visit(expr)
 
     def _visit_expr(self, expr: Expression) -> str:
-        item = self.query_visitor.visit(expr)
+        item = self._query_visitor.visit(expr)
         if self._is_aggregate(expr):
             self.has_aggregate = True
         else:
@@ -575,25 +584,36 @@ class _SelectExtractor:
         return item
 
     @functools.singledispatchmethod
-    def _visit(self, expr: Expression):
+    def _visit(self, expr: Expression) -> None:
         self._visit_expr(expr)
 
     @_visit.register
-    def _(self, call: FunctionCall):
+    def _(self, call: FunctionCall) -> None:
         fn = _order_functions.get(call)
         if fn:
             item = self._visit_expr(call.args[0])
             order = _OrderType(fn.__name__).value.upper()
             self.order_by.append(f"{item} {order}")
-        else:
-            self._visit_expr(call)
+            return
+
+        # outermost wrapper to construct return type
+        fn_name = call.get_function_name()
+        typ = self.global_vars.get(fn_name, None)
+        if is_dataclass_type(typ):
+            self.return_type = typ
+            for expr in call.args:
+                self._visit(expr)
+            return
+
+        self._visit_expr(call)
 
     @_visit.register
-    def _(self, ref: LocalRef):
+    def _(self, ref: LocalRef) -> None:
         self.select.append("*")
 
     @_visit.register
-    def _(self, tup: TupleExpression):
+    def _(self, tup: TupleExpression) -> None:
+        self.return_type = tuple
         for expr in tup.exprs:
             self._visit(expr)
 
@@ -660,7 +680,9 @@ class QueryBuilder:
         sql_having = query_visitor.visit(having_expr) if having_expr else None
 
         # construct SELECT expression
-        select_visitor = _SelectExtractor(query_visitor, qba.context.local_vars)
+        select_visitor = _SelectExtractor(
+            query_visitor, qba.context.local_vars, qba.context.global_vars
+        )
         select_visitor.visit(qba.yield_expr)
         sql_group = select_visitor.group_by if select_visitor.has_aggregate else None
         sql_select = select_visitor.select
@@ -678,9 +700,14 @@ class QueryBuilder:
             sql_parts.extend(["HAVING", sql_having])
         if sql_order:
             sql_parts.extend(["ORDER BY", ", ".join(sql_order)])
-        return " ".join(sql_parts)
 
-    def insert_or_select(self, qba: QueryBuilderArgs, insert_obj: DataClass[T]) -> str:
+        sql = " ".join(sql_parts)
+        typ = select_visitor.return_type
+        return Query(typ, sql)
+
+    def insert_or_select(
+        self, qba: QueryBuilderArgs, insert_obj: DataClass[T]
+    ) -> Query:
         if not is_dataclass_instance(insert_obj):
             raise TypeError(f"{insert_obj} must be a dataclass instance")
 
@@ -722,7 +749,9 @@ class QueryBuilder:
             )
 
         # construct SELECT expression
-        select_visitor = _SelectExtractor(query_visitor, qba.context.local_vars)
+        select_visitor = _SelectExtractor(
+            query_visitor, qba.context.local_vars, qba.context.global_vars
+        )
         select_visitor.visit(qba.yield_expr)
         if select_visitor.has_aggregate:
             raise QueryTypeError(
@@ -757,7 +786,9 @@ class QueryBuilder:
         )
         insert_query = f"INSERT INTO {sql_from} ({sql_insert_names}) SELECT {sql_insert_placeholders} WHERE NOT EXISTS (SELECT * FROM select_query) RETURNING {sql_select_column_names}"
 
-        return f"WITH select_query AS ({select_query}), insert_query AS ({insert_query}) SELECT * FROM select_query UNION ALL SELECT * FROM insert_query"
+        sql = f"WITH select_query AS ({select_query}), insert_query AS ({insert_query}) SELECT * FROM select_query UNION ALL SELECT * FROM insert_query"
+        typ = select_visitor.return_type
+        return Query(typ, sql)
 
     def _match_entities(
         self, entity_joins, joined_entities: List[str], remaining_entities: List[str]
