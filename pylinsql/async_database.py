@@ -25,7 +25,7 @@ from typing import (
 
 import asyncpg
 
-from .base import DataClass, cast_if_not_none
+from .base import DataClass, cast_if_not_none, is_dataclass_instance
 from .core import DEFAULT, is_dataclass_type
 from .query import insert_or_select, select
 
@@ -259,21 +259,30 @@ class DatabaseClient:
         return self._unwrap_one(query.typ, record)
 
     async def insert_or_ignore(self, insert_obj: DataClass[T]) -> None:
-        table_name = type(insert_obj)
-        fields = dataclasses.fields(insert_obj)
-        column_list = ", ".join(field.name for field in fields)
-        placeholder_list = ", ".join(f"${index+1}" for index in range(len(fields)))
-        query = f"INSERT INTO {table_name} ({column_list}) VALUES ({placeholder_list}) ON CONFLICT DO NOTHING"
 
-        values = []
+        if not is_dataclass_instance(insert_obj):
+            raise TypeError(f"object to insert must be a dataclass instance")
+
+        table_name = type(insert_obj).__name__
+        fields = dataclasses.fields(insert_obj)
+
+        column_list = []
+        value_list = []
         for field in fields:
             value = getattr(insert_obj, field.name)
             if value is not DEFAULT:
-                values.append(value)
+                column_list.append(field.name)
+                value_list.append(value)
 
+        columns = ", ".join(column_list)
+        placeholders = ", ".join(
+            f"${index}" for index in range(1, len(column_list) + 1)
+        )
+
+        query = f"""INSERT INTO "{table_name}" ({columns}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"""
         logging.debug("executing query: %s", query)
         stmt = await self.conn.prepare(query)
-        await stmt.execute(values)
+        await stmt.executemany([value_list])
 
     async def typed_fetch(self, typ: T, query: str, *args) -> List[T]:
         """Maps all columns of a database record to a Python data class."""
