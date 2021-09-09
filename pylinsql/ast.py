@@ -20,6 +20,9 @@ class Expression:
         raise NotImplementedError("abstract node")
 
 
+Stack = List[Expression]
+
+
 @dataclass(frozen=True)
 class TopLevelExpression(Expression):
     precedence: ClassVar[int] = 0

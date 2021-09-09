@@ -4,20 +4,26 @@ Reconstruct the original Python code from a Python generator expression.
 This module is used internally.
 """
 
-from __future__ import annotations
-
 import dis
-import inspect
 import itertools
 from dataclasses import dataclass
 from types import CodeType
-from typing import Any, Callable, Generator, List, Tuple, Union
+from typing import Any, Iterable, List, Tuple
 
 from .ast import *
-from .base import is_lambda
+from .node import AbstractNode
 
 
-def pairwise(iterable):
+def all_equal(iterable: Iterable[T]) -> bool:
+    iterator = iter(iterable)
+    try:
+        first = next(iterator)
+    except StopIteration:
+        return True
+    return all(first == x for x in iterator)
+
+
+def pairwise(iterable: Iterable[T]) -> Iterable[Tuple[T, T]]:
     "s -> (s0,s1), (s1,s2), (s2, s3), ..."
     a, b = itertools.tee(iterable)
     next(b, None)
@@ -31,34 +37,110 @@ class _IteratorValue:
     pass
 
 
+class JumpResolver:
+    _next: int
+
+    def process(self, instr: dis.Instruction) -> Tuple[int, int]:
+        self._next = instr.offset + 2  # automatically fall through to subsequent block
+        fn = getattr(self, instr.opname, None)
+
+        if fn is not None:
+            return fn(instr.arg)
+        else:
+            return self._next, self._next
+
+    def test(self, instr: dis.Instruction) -> bool:
+        "True if the Python instruction involves a jump with a target, e.g. JUMP_ABSOLUTE or POP_JUMP_IF_TRUE."
+
+        return getattr(self, instr.opname, None) is not None
+
+    def JUMP_ABSOLUTE(self, target):
+        return target, target
+
+    def JUMP_FORWARD(self, delta):
+        target = self._next + delta
+        return target, target
+
+    def JUMP_IF_FALSE_OR_POP(self, target):
+        return self._next, target
+
+    def JUMP_IF_TRUE_OR_POP(self, target):
+        return target, self._next
+
+    def POP_JUMP_IF_FALSE(self, target):
+        return self._next, target
+
+    def POP_JUMP_IF_TRUE(self, target):
+        return target, self._next
+
+    def FOR_ITER(self, delta):
+        return self._next, self._next + delta
+
+    def RETURN_VALUE(self, _):
+        return None, None
+
+
+@dataclass
+class _BasicBlockExpr:
+    on_true: Stack
+    on_false: Stack
+    # expression on which the final jump instruction in the block is evaluated
+    jump_expr: Optional[Expression]
+    # expression that is produced by a YIELD_VALUE instruction
+    yield_expr: Optional[Expression]
+    # expression that is returned by a RETURN_VALUE instruction
+    return_expr: Optional[Expression]
+
+
 class _Disassembler:
     codeobject: CodeType
-    stack: List[Expression]
+    stack: Stack
     variables: List[str]
-    expr: Expression
 
-    # instruction index on jump condition True
-    on_true: int
-    # instruction index on jump condition False
-    on_false: int
+    _on_true: Stack
+    _on_false: Stack
+    _jump_expr: Expression
+    _yield_expr: Expression
+    _return_expr: Expression
 
     def __init__(self, codeobject):
         self.codeobject = codeobject
         self.stack = []
         self.variables = []
 
-    def process_block(self, instructions: List[dis.Instruction]):
+    def _reset(self):
+        self._on_true = None
+        self._on_false = None
+        self._jump_expr = None
+        self._yield_expr = None
+        self._return_expr = None
+
+    def process_block(
+        self, instructions: List[dis.Instruction], stack: Stack
+    ) -> _BasicBlockExpr:
         "Process a single basic block, ending with a (conditional) jump."
 
-        self.expr = None
-        self.on_true = None
-        self.on_false = None
-
+        self.stack = stack.copy()
+        self._reset()
         for instruction in instructions:
             fn = getattr(self, instruction.opname)
             fn(instruction.arg)
 
-        return self.expr, self.on_true, self.on_false
+        # handle fall-through from this block to the following block
+        if self._on_true is None:
+            self._on_true = self.stack.copy()
+        if self._on_false is None:
+            self._on_false = self.stack.copy()
+
+        result = _BasicBlockExpr(
+            self._on_true,
+            self._on_false,
+            self._jump_expr,
+            self._yield_expr,
+            self._return_expr,
+        )
+        self._reset()
+        return result
 
     def LOAD_ATTR(self, name_index):
         base = self.stack.pop()
@@ -134,27 +216,60 @@ class _Disassembler:
     def JUMP_ABSOLUTE(self, target):
         pass
 
+    def JUMP_FORWARD(self, delta):
+        pass
+
     def JUMP_IF_FALSE_OR_POP(self, target):
-        raise NotImplementedError()
+        self._on_false = self.stack.copy()
+        self._jump_expr = self.stack.pop()
+        self._on_true = self.stack.copy()
 
     def JUMP_IF_TRUE_OR_POP(self, target):
-        raise NotImplementedError()
+        self._on_true = self.stack.copy()
+        self._jump_expr = self.stack.pop()
+        self._on_false = self.stack.copy()
 
-    def POP_JUMP_IF_FALSE(self, target):
-        self.expr = self.stack.pop()
-        self.on_true = None
-        self.on_false = target
+    def _pop_jump(self):
+        self._jump_expr = self.stack.pop()
+        self._on_true = self.stack.copy()
+        self._on_false = self.stack.copy()
 
-    def POP_JUMP_IF_TRUE(self, target):
-        self.expr = self.stack.pop()
-        self.on_true = target
-        self.on_false = None
+    POP_JUMP_IF_FALSE = lambda self, target: self._pop_jump()
+    POP_JUMP_IF_TRUE = lambda self, target: self._pop_jump()
+
+    def DUP_TOP(self, _):
+        self.stack.append(self.stack[-1])
+
+    def DUP_TOP_TWO(self, _):
+        item1 = self.stack[-1]
+        item2 = self.stack[-2]
+        self.stack.extend([item2, item1])
 
     def POP_TOP(self, _):
         self.stack.pop()
 
+    def ROT_TWO(self, _):
+        self.stack[-1], self.stack[-2] = self.stack[-2], self.stack[-1]
+
+    def ROT_THREE(self, _):
+        self.stack[-1], self.stack[-2], self.stack[-3] = (
+            self.stack[-2],
+            self.stack[-3],
+            self.stack[-1],
+        )
+
+    def ROT_FOUR(self, _):
+        self.stack[-1], self.stack[-2], self.stack[-3], self.stack[-4] = (
+            self.stack[-2],
+            self.stack[-3],
+            self.stack[-4],
+            self.stack[-1],
+        )
+
     def FOR_ITER(self, _):
+        self._on_false = self.stack.copy()
         self.stack.append(_IteratorValue())
+        self._on_true = self.stack.copy()
 
     def _sequence_op(self, count, cls):
         values = []
@@ -172,19 +287,40 @@ class _Disassembler:
             self.stack.append(IndexAccess(value, index))
 
     def RETURN_VALUE(self, _):
-        self.expr = self.stack.pop()
+        self._return_expr = self.stack.pop()
 
     def YIELD_VALUE(self, _):
-        self.expr = self.stack.pop()
+        self._yield_expr = self.stack.pop()
 
 
 @dataclass
-class _BasicBlock:
+class _BasicBlockSpan:
     "An interval that contains instructions and ends with a (conditional) jump instruction."
 
     start_offset: int = None
     start_index: int = None
     end_index: int = None
+
+
+def _get_basic_blocks(instructions: List[dis.Instruction]) -> List[_BasicBlockSpan]:
+    jmp = JumpResolver()
+
+    blocks = []
+    block = _BasicBlockSpan(start_index=0, start_offset=0)
+    for prev_index, (prev_instr, next_instr) in enumerate(pairwise(instructions)):
+        next_index = prev_index + 1
+        if next_instr.is_jump_target or jmp.test(prev_instr):
+            # terminate block before jump target and after jump instruction
+            block.end_index = next_index
+            blocks.append(block)
+
+            # start new block
+            block = _BasicBlockSpan(
+                start_offset=next_instr.offset, start_index=next_index
+            )
+    block.end_index = len(instructions)
+    blocks.append(block)
+    return blocks
 
 
 @dataclass
@@ -198,65 +334,62 @@ class CodeExpressionAnalyzer:
     code_object: CodeType
     instructions: List[dis.Instruction]
 
+    _yield_expr: Expression
+
     def __init__(self, code_object: CodeType):
         self.code_object = code_object
         self.instructions = list(dis.Bytecode(self.code_object))
 
-    @staticmethod
-    def _is_jump_instruction(instruction: dis.Instruction) -> bool:
-        "True if the Python instruction involves a jump with a target, e.g. JUMP_ABSOLUTE or POP_JUMP_IF_TRUE."
+    def _get_abstract_nodes(
+        self, blocks: List[_BasicBlockSpan]
+    ) -> Tuple[List[str], List[AbstractNode]]:
 
-        return "FOR_ITER" == instruction.opname or "JUMP" in instruction.opname
-
-    def _get_basic_blocks(self) -> List[_BasicBlock]:
-        blocks = []
-        block = _BasicBlock(start_index=0, start_offset=0)
-        for prev_index, (prev_instr, next_instr) in enumerate(
-            pairwise(self.instructions)
-        ):
-            next_index = prev_index + 1
-            if next_instr.is_jump_target or self._is_jump_instruction(prev_instr):
-                # terminate block before jump target and after jump instruction
-                block.end_index = next_index
-                blocks.append(block)
-
-                # start new block
-                block = _BasicBlock(
-                    start_offset=next_instr.offset, start_index=next_index
-                )
-        block.end_index = len(self.instructions)
-        blocks.append(block)
-        return blocks
-
-    def _get_abstract_nodes(self) -> Tuple[List[str], List[_AbstractNode]]:
-        blocks = self._get_basic_blocks()
-        disassembler = _Disassembler(self.code_object)
-
-        node_by_offset = {}
-        for index, block in enumerate(blocks):
-            expr, on_true, on_false = disassembler.process_block(
-                self.instructions[block.start_index : block.end_index]
+        jmp = JumpResolver()
+        nodes: List[AbstractNode] = []
+        node_by_offset: Dict[Tuple[int, int]] = {}
+        for block in blocks:
+            node = AbstractNode()
+            nodes.append(node)
+            on_true, on_false = jmp.process(
+                self.instructions[block.start_index : block.end_index][-1],
             )
-            if index + 1 < len(blocks):
-                # automatically fall through to subsequent block
-                if on_true is None:
-                    on_true = blocks[index + 1].start_offset
-                if on_false is None:
-                    on_false = blocks[index + 1].start_offset
             node_by_offset[block.start_offset] = (
-                _AbstractNode(expr),
+                node,
                 on_true,
                 on_false,
             )
 
-        assert not disassembler.stack
-
         for node, on_true, on_false in node_by_offset.values():
-            on_true_node = node_by_offset[on_true][0] if on_true else None
-            on_false_node = node_by_offset[on_false][0] if on_false else None
-            node.set_target(on_true_node, on_false_node)
+            node.set_target(
+                node_by_offset[on_true][0] if on_true is not None else None,
+                node_by_offset[on_false][0] if on_false is not None else None,
+            )
 
-        nodes = [item[0] for item in node_by_offset.values()]
+        disassembler = _Disassembler(self.code_object)
+        for block, node in zip(blocks, nodes):
+            stacks = []
+            for origin in node.get_origin_true():
+                if origin.stack_true is not None:
+                    stacks.append(origin.stack_true)
+            for origin in node.get_origin_false():
+                if origin.stack_false is not None:
+                    stacks.append(origin.stack_false)
+
+            if not all_equal(stacks):
+                raise NotImplementedError()
+            stack = stacks[0] if stacks else []
+
+            result = disassembler.process_block(
+                self.instructions[block.start_index : block.end_index],
+                stack,
+            )
+
+            node.expr = result.jump_expr
+            node.stack_true = result.on_true
+            node.stack_false = result.on_false
+
+            if result.yield_expr:
+                self._yield_expr = result.yield_expr
 
         # remove prolog and epilog from generator
         # prolog pushes the single iterable argument (a.k.a. ".0") to the stack that a generator expression receives:
@@ -268,10 +401,10 @@ class CodeExpressionAnalyzer:
 
         return disassembler.variables, nodes
 
-    def _get_condition(self, nodes: List[_AbstractNode]) -> Expression:
+    def _get_condition(self, nodes: List[AbstractNode]) -> Expression:
         # extract conditional part from generator
-        true_node = _AbstractNode(Constant(True))
-        false_node = _AbstractNode(Constant(False))
+        true_node = AbstractNode(Constant(True))
+        false_node = AbstractNode(Constant(False))
 
         # identify loop structural elements
         # loop head (a single block):
@@ -337,7 +470,7 @@ class CodeExpressionAnalyzer:
 
                 if end - start > 1:
                     conj_expr = Conjunction([n.expr for n in nodes[start:end]])
-                    conj_node = _AbstractNode(conj_expr)
+                    conj_node = AbstractNode(conj_expr)
                     conj_node.set_target(nodes[end - 1].on_true, nodes[start].on_false)
                     conj_node.seize_origins(nodes[start])
                     for n in nodes[start:end]:
@@ -352,7 +485,7 @@ class CodeExpressionAnalyzer:
 
                 if end - start > 1:
                     disj_expr = Disjunction([n.expr for n in nodes[start:end]])
-                    disj_node = _AbstractNode(disj_expr)
+                    disj_node = AbstractNode(disj_expr)
                     disj_node.set_target(nodes[start].on_true, nodes[end - 1].on_false)
                     disj_node.seize_origins(nodes[start])
                     for n in nodes[start:end]:
@@ -363,104 +496,16 @@ class CodeExpressionAnalyzer:
         return nodes[0].expr
 
     def get_expression(self) -> CodeExpression:
-        variables, nodes = self._get_abstract_nodes()
+        blocks = _get_basic_blocks(self.instructions)
+
+        variables, nodes = self._get_abstract_nodes(blocks)
 
         cond_expr = self._get_condition(nodes) if len(nodes) > 2 else None
-        yield_expr = nodes[-1].expr
 
-        return CodeExpression(variables, cond_expr, yield_expr)
+        return CodeExpression(variables, cond_expr, self._yield_expr)
 
     def _show_blocks(self, blocks):
         for block in blocks:
             for instr in self.instructions[block.start_index : block.end_index]:
                 print(instr.opname)
             print("----")
-
-
-class _AbstractNode:
-    "An abstract node in the control flow graph."
-
-    expr: Expression
-    on_true: _AbstractNode = None
-    on_false: _AbstractNode = None
-    origins: List[_AbstractNode]
-
-    def __init__(self, expr):
-        self.expr = expr
-        self.origins = []
-
-    def print(self, indent=0):
-        print(" " * indent, self.expr, sep="")
-        indent += 4
-        if self.on_true:
-            self.on_true.print(indent)
-        if self.on_false:
-            self.on_false.print(indent)
-
-    def is_origin_consistent(self):
-        "Checks if all incoming edges are exclusively true (green) or exclusively false (red)."
-
-        origins_true = all(self == caller.on_true for caller in self.origins)
-        origins_false = all(self == caller.on_false for caller in self.origins)
-        return origins_true or origins_false
-
-    def set_target(self, true_node: _AbstractNode, false_node: _AbstractNode):
-        "Binds outgoing edges of a node."
-
-        self.set_on_true(true_node)
-        self.set_on_false(false_node)
-
-    def set_on_true(self, node: _AbstractNode):
-        "Binds the true (green) edge of the node."
-
-        if self.on_true:
-            self.on_true.origins.remove(self)
-        self.on_true = node
-        if node:
-            node.origins.append(self)
-
-    def set_on_false(self, node: _AbstractNode):
-        "Binds the false (red) edge of the node."
-
-        if self.on_false:
-            self.on_false.origins.remove(self)
-        self.on_false = node
-        if node:
-            node.origins.append(self)
-
-    def seize_origins(self, node: _AbstractNode):
-        """
-        Captures all incoming edges of another node such that all edges that were previously entering that node
-        are now targeting this node.
-        """
-
-        for origin in node.origins:
-            if origin.on_true is node:
-                origin.set_on_true(self)
-            elif origin.on_false is node:
-                origin.set_on_false(self)
-
-    def twist(self):
-        "Swaps true (green) and false (red) edges with each another."
-
-        self.expr = self.expr.negate()
-        self.on_false, self.on_true = self.on_true, self.on_false
-
-    def topological_sort(self):
-        "Produces a topological sort of all descendant nodes starting from this node."
-
-        result = []
-        seen = set()
-
-        def recursive_helper(node):
-            if node.on_true and node.on_true not in seen:
-                seen.add(node.on_true)
-                recursive_helper(node.on_true)
-            if node.on_false and node.on_false not in seen:
-                seen.add(node.on_false)
-                recursive_helper(node.on_false)
-            result.append(node)
-
-        recursive_helper(self)
-        result.reverse()
-        return result

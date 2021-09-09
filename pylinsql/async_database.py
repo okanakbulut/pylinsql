@@ -103,7 +103,9 @@ class SchemaConnection(asyncpg.Connection):
 
     async def _initialize(self) -> None:
         if not self.initialized:
-            await super().execute(f"SET search_path to '{type(self).default_schema}'")
+            await super().execute(
+                f"SET SESSION search_path TO '{type(self).default_schema}'"
+            )
             self.initialized = True
 
     async def prepare(self, query, *, timeout=None, record_class=None):
@@ -112,10 +114,12 @@ class SchemaConnection(asyncpg.Connection):
 
     async def execute(self, query: str, *args, timeout: float = None) -> str:
         await self._initialize()
+        logging.debug(query)
         return await super().execute(query, *args, timeout=timeout)
 
     async def executemany(self, command: str, args, *, timeout: float = None):
         await self._initialize()
+        logging.debug(command)
         return await super().executemany(command, args, timeout=timeout)
 
 
