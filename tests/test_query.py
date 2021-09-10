@@ -6,6 +6,7 @@ from pylinsql.core import (
     Query,
     QueryTypeError,
     asc,
+    avg,
     count,
     count_if,
     day,
@@ -115,6 +116,22 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
             """SELECT * FROM "Person" AS p WHERE p.given_name = 'John' AND p.family_name <> 'Doe' OR p.perm_address_id IS NOT NULL""",
         )
 
+    def test_where_comparison_chain(self):
+        self.assertQueryIs(
+            select(
+                p
+                for p in entity(Person)
+                if date(1980, 1, 1) <= p.birth_date <= date(1990, 1, 1)
+            ),
+            """SELECT * FROM "Person" AS p WHERE MAKE_DATE(1980, 1, 1) <= p.birth_date AND p.birth_date <= MAKE_DATE(1990, 1, 1)""",
+        )
+
+    def test_where_mixed_comparison_chain(self):
+        self.assertQueryIs(
+            select((p for p in entity(Person) if True == True != False)),
+            """SELECT * FROM "Person" AS p WHERE True = True AND True <> False""",
+        )
+
     def test_where_having(self):
         self.assertQueryIs(
             select(
@@ -214,33 +231,15 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
         # verify query string is the same
         self.assertEqual(query1, query2)
 
-    def test_instructions(self):
-        #          0 LOAD_FAST                0 (.0)
-        # >>       2 FOR_ITER                34 (to 38)
-        #          4 STORE_FAST               1 (p)
-        #          6 LOAD_CONST               0 (True)
-        #          8 LOAD_CONST               0 (True)
-        #         10 DUP_TOP
-        #         12 ROT_THREE
-        #         14 COMPARE_OP               2 (==)
-        #         16 POP_JUMP_IF_FALSE       26
-        #         18 LOAD_CONST               1 (False)
-        #         20 COMPARE_OP               3 (!=)
-        #         22 POP_JUMP_IF_FALSE        2
-        #         24 JUMP_FORWARD             4 (to 30)
-        # >>      26 POP_TOP
-        #         28 JUMP_ABSOLUTE            2
-        # >>      30 LOAD_FAST                1 (p)
-        #         32 YIELD_VALUE
-        #         34 POP_TOP
-        #         36 JUMP_ABSOLUTE            2
-        # >>      38 LOAD_CONST               2 (None)
-        #         40 RETURN_VALUE
-
-        self.assertQueryIs(
-            select((p for p in entity(Person) if True == True != False)),
-            """SELECT * FROM "Person" AS p WHERE True = True AND True <> False""",
-        )
+    def test_conj_disj_in_yield(self):
+        with self.assertRaises(NotImplementedError):
+            self.assertQueryIs(
+                select(
+                    count_if(p.id, date(1980, 1, 1) <= p.birth_date <= date(1990, 1, 1))
+                    for p in entity(Person)
+                ),
+                """SELECT COUNT(p.id) FILTER (WHERE MAKE_DATE(1980, 1, 1) <= p.birth_date AND p.birth_date <= MAKE_DATE(1990, 1, 1)) FROM "Person" AS p""",
+            )
 
     def test_fail_wrong_type(self):
         with self.assertRaises(TypeError):

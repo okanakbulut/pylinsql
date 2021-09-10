@@ -6,7 +6,7 @@ This module is used internally.
 
 import dis
 import itertools
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import CodeType
 from typing import Any, Iterable, List, Tuple
 
@@ -28,6 +28,9 @@ def pairwise(iterable: Iterable[T]) -> Iterable[Tuple[T, T]]:
     a, b = itertools.tee(iterable)
     next(b, None)
     return zip(a, b)
+
+
+Stack = List[Expression]
 
 
 @dataclass(frozen=True)
@@ -324,6 +327,14 @@ def _get_basic_blocks(instructions: List[dis.Instruction]) -> List[_BasicBlockSp
 
 
 @dataclass
+class _NodeOutputs:
+    # stack passed on to the following block when condition is true
+    on_true: Stack = None
+    # stack passed on to the following block when condition is false
+    on_false: Stack = None
+
+
+@dataclass
 class CodeExpression:
     local_vars: List[str]
     conditional_expr: Expression
@@ -339,10 +350,9 @@ class CodeExpressionAnalyzer:
     def __init__(self, code_object: CodeType):
         self.code_object = code_object
         self.instructions = list(dis.Bytecode(self.code_object))
+        self._yield_expr = None
 
-    def _get_abstract_nodes(
-        self, blocks: List[_BasicBlockSpan]
-    ) -> Tuple[List[str], List[AbstractNode]]:
+    def _get_abstract_nodes(self, blocks: List[_BasicBlockSpan]) -> List[AbstractNode]:
 
         jmp = JumpResolver()
         nodes: List[AbstractNode] = []
@@ -365,19 +375,38 @@ class CodeExpressionAnalyzer:
                 node_by_offset[on_false][0] if on_false is not None else None,
             )
 
+        return nodes
+
+    def _disassemble(
+        self, blocks: List[_BasicBlockSpan], nodes: List[AbstractNode]
+    ) -> List[str]:
+
+        node_outputs: Dict[AbstractNode, _NodeOutputs] = {
+            node: _NodeOutputs() for node in nodes
+        }
         disassembler = _Disassembler(self.code_object)
         for block, node in zip(blocks, nodes):
-            stacks = []
-            for origin in node.get_origin_true():
-                if origin.stack_true is not None:
-                    stacks.append(origin.stack_true)
-            for origin in node.get_origin_false():
-                if origin.stack_false is not None:
-                    stacks.append(origin.stack_false)
-
-            if not all_equal(stacks):
-                raise NotImplementedError()
-            stack = stacks[0] if stacks else []
+            stack: Stack = None
+            if not node.origins:
+                # function block entry point
+                stack = []
+            else:
+                output_on_true = (
+                    node_outputs[origin].on_true for origin in node.get_origin_true()
+                )
+                output_on_false = (
+                    node_outputs[origin].on_false for origin in node.get_origin_false()
+                )
+                output_stacks = itertools.chain(output_on_true, output_on_false)
+                for output_stack in output_stacks:
+                    if output_stack is None:
+                        pass
+                    elif stack is None:
+                        stack = output_stack
+                    elif stack != output_stack:
+                        raise NotImplementedError(
+                            "conditional expression in yield part of generator expression"
+                        )
 
             result = disassembler.process_block(
                 self.instructions[block.start_index : block.end_index],
@@ -385,21 +414,18 @@ class CodeExpressionAnalyzer:
             )
 
             node.expr = result.jump_expr
-            node.stack_true = result.on_true
-            node.stack_false = result.on_false
+            node_outputs[node].on_true = result.on_true
+            node_outputs[node].on_false = result.on_false
 
             if result.yield_expr:
-                self._yield_expr = result.yield_expr
+                if self._yield_expr is None:
+                    self._yield_expr = result.yield_expr
+                elif self._yield_expr != result.yield_expr:
+                    raise NotImplementedError(
+                        "conditional expression in yield part of generator expression"
+                    )
 
-        # remove prolog and epilog from generator
-        # prolog pushes the single iterable argument (a.k.a. ".0") to the stack that a generator expression receives:
-        #       0 LOAD_FAST                0 (.0)
-        # epilog pops the stack and returns None to indicate end of iteration
-        # >>   48 LOAD_CONST               4 (None)
-        #      50 RETURN_VALUE
-        nodes = nodes[1:-1]
-
-        return disassembler.variables, nodes
+        return disassembler.variables
 
     def _get_condition(self, nodes: List[AbstractNode]) -> Expression:
         # extract conditional part from generator
@@ -473,6 +499,8 @@ class CodeExpressionAnalyzer:
         nodes.remove(false_node)
 
         while len(nodes) > 1:
+            replacements = False
+
             for start in range(len(nodes) - 1):
                 # locate a span of abstract nodes that could form a single conjunction
                 end = start + 1
@@ -487,6 +515,7 @@ class CodeExpressionAnalyzer:
                     for n in nodes[start:end]:
                         n.set_target(None, None)
                     nodes[start:end] = [conj_node]
+                    replacements = True
                     break
 
                 # locate a span of abstract nodes that could form a single disjunction
@@ -502,15 +531,29 @@ class CodeExpressionAnalyzer:
                     for n in nodes[start:end]:
                         n.set_target(None, None)
                     nodes[start:end] = [disj_node]
+                    replacements = True
                     break
+
+            if not replacements:
+                nodes[0].twist()
 
         return nodes[0].expr
 
     def get_expression(self) -> CodeExpression:
+        # convert instructions into abstract nodes with symbolic expressions
         blocks = _get_basic_blocks(self.instructions)
+        nodes = self._get_abstract_nodes(blocks)
+        variables = self._disassemble(blocks, nodes)
 
-        variables, nodes = self._get_abstract_nodes(blocks)
+        # remove prolog and epilog from generator
+        # prolog pushes the single iterable argument (a.k.a. ".0") to the stack that a generator expression receives:
+        #       0 LOAD_FAST                0 (.0)
+        # epilog pops the stack and returns None to indicate end of iteration
+        # >>   48 LOAD_CONST               4 (None)
+        #      50 RETURN_VALUE
+        nodes = nodes[1:-1]
 
+        # extract conditional expression
         cond_expr = self._get_condition(nodes) if len(nodes) > 2 else None
 
         return CodeExpression(variables, cond_expr, self._yield_expr)

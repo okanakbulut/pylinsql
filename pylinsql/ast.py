@@ -20,9 +20,6 @@ class Expression:
         raise NotImplementedError("abstract node")
 
 
-Stack = List[Expression]
-
-
 @dataclass(frozen=True)
 class TopLevelExpression(Expression):
     precedence: ClassVar[int] = 0
@@ -98,42 +95,39 @@ class GlobalRef(Expression):
 
 
 @dataclass(frozen=True)
-class AttributeAccess(Expression):
+class NegateableExpression(Expression):
+    def negate(self) -> Expression:
+        return Negation(self)
+
+
+@dataclass(frozen=True)
+class AttributeAccess(NegateableExpression):
     precedence: ClassVar[int] = 14
 
     base: Expression
     attr_name: str
-
-    def negate(self) -> Expression:
-        return Negation(self)
 
     def __str__(self):
         return f"{self.base}.{self.attr_name}"
 
 
 @dataclass(frozen=True)
-class IndexAccess(Expression):
+class IndexAccess(NegateableExpression):
     precedence: ClassVar[int] = 13
 
     base: Expression
     index: int
-
-    def negate(self) -> Expression:
-        return Negation(self)
 
     def __str__(self):
         return f"{self.base}[{self.index}]"
 
 
 @dataclass(frozen=True)
-class FunctionCall(Expression):
+class FunctionCall(NegateableExpression):
     precedence: ClassVar[int] = 13
 
     base: Expression
     args: List[Expression]
-
-    def negate(self) -> Expression:
-        return Negation(self)
 
     def get_function_name(self) -> Optional[str]:
         if isinstance(self.base, GlobalRef):
@@ -330,6 +324,9 @@ class BooleanExpression(Expression):
 class Conjunction(BooleanExpression):
     precedence: ClassVar[int] = 2
 
+    def negate(self) -> Expression:
+        return Disjunction([expr.negate() for expr in self.exprs])
+
     def __str__(self):
         return self.to_string("and")
 
@@ -337,6 +334,9 @@ class Conjunction(BooleanExpression):
 @dataclass(frozen=True)
 class Disjunction(BooleanExpression):
     precedence: ClassVar[int] = 1
+
+    def negate(self) -> Expression:
+        return Conjunction([expr.negate() for expr in self.exprs])
 
     def __str__(self):
         return self.to_string("or")

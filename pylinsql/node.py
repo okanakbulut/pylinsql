@@ -7,9 +7,9 @@ This module is used internally.
 
 from __future__ import annotations
 
-from typing import Any, List
+from typing import List
 
-from .ast import Expression, Stack
+from .ast import Expression
 
 
 class AbstractNode:
@@ -17,10 +17,6 @@ class AbstractNode:
 
     # symbolic expression that constitutes the target condition
     expr: Expression
-    # stack passed on to the following block when condition is true
-    stack_true: Stack = None
-    # stack passed on to the following block when condition is false
-    stack_false: Stack = None
 
     # target node if condition evaluates to true (green edge)
     on_true: AbstractNode = None
@@ -30,9 +26,11 @@ class AbstractNode:
     origins: List[AbstractNode]
 
     def __init__(self, expr=None):
-        if expr:
-            self.expr = expr
+        self.expr = expr
         self.origins = []
+
+    def __repr__(self) -> str:
+        return f"{__class__.__name__}({self.expr})"
 
     def print(self, indent=0) -> None:
         print(" " * indent, self.expr, sep="")
