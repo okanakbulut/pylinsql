@@ -436,6 +436,17 @@ class CodeExpressionAnalyzer:
         cond_nodes.append(false_node)
         root = cond_nodes[0]
 
+        # eliminate nodes that correspond to unconditional forward jumps
+        for node in cond_nodes:
+            if node.expr is None and node.on_true is node.on_false:
+                node.on_true.seize_origins(node)
+                node.set_target(None, None)
+        cond_nodes = [
+            node
+            for node in cond_nodes
+            if node.expr is None and node.on_true is None and node.on_false is None
+        ]
+
         # align DAG edge colors such that all incoming edges are either green (true) edges or red (false) edges
         marked = set()
         for node in cond_nodes:

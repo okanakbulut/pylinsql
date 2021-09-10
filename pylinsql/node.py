@@ -15,13 +15,18 @@ from .ast import Expression, Stack
 class AbstractNode:
     "An abstract node in the control flow graph."
 
+    # symbolic expression that constitutes the target condition
     expr: Expression
-    on_true: AbstractNode = None
-    on_false: AbstractNode = None
-
+    # stack passed on to the following block when condition is true
     stack_true: Stack = None
+    # stack passed on to the following block when condition is false
     stack_false: Stack = None
 
+    # target node if condition evaluates to true (green edge)
+    on_true: AbstractNode = None
+    # target node if condition evaluates to false (red edge)
+    on_false: AbstractNode = None
+    # nodes with outgoing edges (true or false) pointing to this node
     origins: List[AbstractNode]
 
     def __init__(self, expr=None):

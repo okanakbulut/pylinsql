@@ -214,7 +214,7 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
         # verify query string is the same
         self.assertEqual(query1, query2)
 
-    def disabled_test_instructions(self):
+    def test_instructions(self):
         #          0 LOAD_FAST                0 (.0)
         # >>       2 FOR_ITER                34 (to 38)
         #          4 STORE_FAST               1 (p)
@@ -239,7 +239,7 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
 
         self.assertQueryIs(
             select((p for p in entity(Person) if True == True != False)),
-            '''SELECT * FROM "Person"''',
+            """SELECT * FROM "Person" AS p WHERE True = True AND True <> False""",
         )
 
     def test_fail_wrong_type(self):
