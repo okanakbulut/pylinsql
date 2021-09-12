@@ -10,7 +10,7 @@ import builtins
 import dataclasses
 import enum
 import functools
-from dataclasses import dataclass
+from dataclasses import MISSING, dataclass
 from datetime import date, time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -152,7 +152,7 @@ class _JoinExtractor:
     def _(self, call: FunctionCall) -> Optional[FunctionCall]:
         fn = _join_functions.get(call)
         if fn:
-            return self._join_expr(_JoinType(fn.__name__), call.args[0], call.args[1])
+            return self._join_expr(_JoinType(fn.__name__), call.pargs[0], call.pargs[1])
 
         return call
 
@@ -246,7 +246,9 @@ class _ConditionContextClassifier:
 
         # process regular functions
         self._visit(call.base)
-        for arg in call.args:
+        for arg in call.pargs:
+            self._visit(arg)
+        for _, arg in call.kwargs.items():
             self._visit(arg)
 
     def _visit_aggregation_func(self, fn: Callable, call: FunctionCall) -> None:
@@ -261,7 +263,9 @@ class _ConditionContextClassifier:
 
             self._visit(call.base)
             self._inside_aggregation = True
-            for arg in call.args:
+            for arg in call.pargs:
+                self._visit(arg)
+            for _, arg in call.kwargs.items():
                 self._visit(arg)
             self._inside_aggregation = False
 
@@ -470,21 +474,21 @@ class _QueryVisitor:
     def _(self, call: FunctionCall) -> str:
         fn = _aggregate_functions.get(call)
         if fn:
-            args = ", ".join([self.visit(arg) for arg in call.args])
+            args = ", ".join([self.visit(arg) for arg in call.pargs])
             func = call.base.name.upper()
             return f"{func}({args})"
 
         fn = _conditional_aggregate_functions.get(call)
         if fn:
             self.stack.append(TopLevelExpression())
-            expr, cond = [self.visit(arg) for arg in call.args]
+            expr, cond = [self.visit(arg) for arg in call.pargs]
             self.stack.pop()
             func = call.base.name.replace("_if", "").upper()
             return f"{func}({expr}) FILTER (WHERE {cond})"
 
         fn = _datetime_functions.get(call)
         if fn:
-            arg = self.visit(call.args[0])
+            arg = self.visit(call.pargs[0])
             return f"EXTRACT({call.base.name.upper()} FROM {arg})"
 
         if call.is_dispatchable(now):
@@ -492,11 +496,11 @@ class _QueryVisitor:
 
         fn_name = call.get_function_name()
         if fn_name == date.__name__:
-            args = ", ".join([self.visit(arg) for arg in call.args])
+            args = ", ".join([self.visit(arg) for arg in call.pargs])
             return f"MAKE_DATE({args})"
 
         if fn_name == time.__name__:
-            args = ", ".join([self.visit(arg) for arg in call.args])
+            args = ", ".join([self.visit(arg) for arg in call.pargs])
             return f"MAKE_TIME({args})"
 
         raise TypeError(f"unrecognized function call: {call}")
@@ -591,7 +595,7 @@ class _SelectExtractor:
     def _(self, call: FunctionCall) -> None:
         fn = _order_functions.get(call)
         if fn:
-            item = self._visit_expr(call.args[0])
+            item = self._visit_expr(call.pargs[0])
             order = _OrderType(fn.__name__).value.upper()
             self.order_by.append(f"{item} {order}")
             return
@@ -601,8 +605,19 @@ class _SelectExtractor:
         typ = self.global_vars.get(fn_name, None)
         if is_dataclass_type(typ):
             self.return_type = typ
-            for expr in call.args:
+
+            # put positional arguments in SELECT in the same order they appear in generator expression
+            for expr in call.pargs:
                 self._visit(expr)
+
+            # reorder keyword arguments to match the order defined in the data class
+            for f in dataclasses.fields(typ)[len(call.pargs) :]:
+                expr = call.kwargs.get(f.name, MISSING)
+                if expr is MISSING:
+                    self.select.append("NULL")
+                else:
+                    self._visit(expr)
+
             return
 
         self._visit_expr(call)

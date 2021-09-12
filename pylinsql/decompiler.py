@@ -169,13 +169,35 @@ class _Disassembler:
         self.stack.pop()
         self.variables.append(self.codeobject.co_varnames[var_num])
 
-    def CALL_FUNCTION(self, argc):
+    def _pop_func_args(self, argc: int) -> List[Expression]:
         args = []
         for _ in range(argc):
             args.append(self.stack.pop())
         args.reverse()
+        return args
+
+    def CALL_FUNCTION(self, argc):
+        args = self._pop_func_args(argc)
         func = self.stack.pop()
         self.stack.append(FunctionCall(func, args))
+
+    def CALL_FUNCTION_KW(self, argc):
+        # keyword arguments with keyword names supplied in a tuple
+        const: Constant = self.stack.pop()
+        if not isinstance(const.value, tuple):
+            raise RuntimeError("keyword argument names must be supplied in a tuple")
+        names: Tuple[str, ...] = const.value
+        values = self._pop_func_args(len(names))
+        kwargs = {name: value for name, value in zip(names, values)}
+
+        # positional arguments in reverse order
+        pargs = []
+        for _ in range(argc - len(names)):
+            pargs.append(self.stack.pop())
+        pargs.reverse()
+
+        func = self.stack.pop()
+        self.stack.append(FunctionCall(func, pargs, kwargs))
 
     def _unary_op(self, cls):
         expr = self.stack.pop()

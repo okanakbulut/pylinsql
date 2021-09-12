@@ -23,3 +23,11 @@ class PersonCity:
     family_name: str
     given_name: str
     city: str
+
+
+@dataclass
+class PersonCountryCity:
+    family_name: str
+    given_name: str
+    country: str
+    city: str

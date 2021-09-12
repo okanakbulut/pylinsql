@@ -23,7 +23,7 @@ from pylinsql.core import (
 )
 from pylinsql.query import cache_info, insert_or_select, select
 
-from tests.database import Address, Person, PersonCity
+from tests.database import Address, Person, PersonCity, PersonCountryCity
 
 
 class TestLanguageIntegratedSQL(unittest.TestCase):
@@ -93,6 +93,31 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
             """SELECT p.family_name, p.given_name, a.city FROM "Person" AS p INNER JOIN "Address" AS a ON p.perm_address_id = a.id""",
         )
         self.assertEqual(query.typ, PersonCity)
+
+    def test_select_dataclass_keyword(self):
+        query = select(
+            PersonCity(given_name=p.given_name, family_name=p.family_name, city=a.city)
+            for p, a in entity(Person, Address)
+            if inner_join(p.perm_address_id, a.id)
+        )
+        self.assertQueryIs(
+            query,
+            """SELECT p.family_name, p.given_name, a.city FROM "Person" AS p INNER JOIN "Address" AS a ON p.perm_address_id = a.id""",
+        )
+        self.assertEqual(query.typ, PersonCity)
+
+        query = select(
+            PersonCountryCity(
+                given_name=p.given_name, family_name=p.family_name, city=a.city
+            )
+            for p, a in entity(Person, Address)
+            if inner_join(p.perm_address_id, a.id)
+        )
+        self.assertQueryIs(
+            query,
+            """SELECT p.family_name, p.given_name, NULL, a.city FROM "Person" AS p INNER JOIN "Address" AS a ON p.perm_address_id = a.id""",
+        )
+        self.assertEqual(query.typ, PersonCountryCity)
 
     def test_subquery(self):
         subquery_expr = select(a.id for a in entity(Address) if a.city == "London")

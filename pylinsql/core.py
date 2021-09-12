@@ -20,30 +20,32 @@ class EntityProxy:
 
 
 @overload
-def entity(cls1: Type[T1]) -> List[T1]:
+def entity(cls1: Type[T1], /) -> List[T1]:
     ...
 
 
 @overload
-def entity(cls1: Type[T1], cls2: Type[T2]) -> List[Tuple[T1, T2]]:
-    ...
-
-
-@overload
-def entity(cls1: Type[T1], cls2: Type[T2], cls3: Type[T3]) -> List[Tuple[T1, T2, T3]]:
+def entity(cls1: Type[T1], cls2: Type[T2], /) -> List[Tuple[T1, T2]]:
     ...
 
 
 @overload
 def entity(
-    cls1: Type[T1], cls2: Type[T2], cls3: Type[T3], cls4: Type[T4]
+    cls1: Type[T1], cls2: Type[T2], cls3: Type[T3], /
+) -> List[Tuple[T1, T2, T3]]:
+    ...
+
+
+@overload
+def entity(
+    cls1: Type[T1], cls2: Type[T2], cls3: Type[T3], cls4: Type[T4], /
 ) -> List[Tuple[T1, T2, T3, T4]]:
     ...
 
 
 @overload
 def entity(
-    cls1: Type[T1], cls2: Type[T2], cls3: Type[T3], cls4: Type[T4], cls5: Type[T5]
+    cls1: Type[T1], cls2: Type[T2], cls3: Type[T3], cls4: Type[T4], cls5: Type[T5], /
 ) -> List[Tuple[T1, T2, T3, T4, T5]]:
     ...
 
@@ -56,14 +58,9 @@ def entity(
     cls4: Type[T4],
     cls5: Type[T5],
     cls6: Type[T6],
+    /,
 ) -> List[Tuple[T1, T2, T3, T4, T5, T6]]:
     ...
-
-
-def is_primitive_type(typ):
-    "True if the argument corresponds to a primitive data type such as bool, int or str."
-
-    return isinstance(typ, (bool, int, str))
 
 
 def entity(*cls: Type[T]) -> List:

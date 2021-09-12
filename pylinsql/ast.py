@@ -7,7 +7,8 @@ This module is used internally.
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import itertools
 from typing import Any, Callable, ClassVar, Dict, List, Optional
 
 from .core import *
@@ -127,7 +128,8 @@ class FunctionCall(NegateableExpression):
     precedence: ClassVar[int] = 13
 
     base: Expression
-    args: List[Expression]
+    pargs: List[Expression]
+    kwargs: Dict[str, Expression] = field(default_factory=dict)
 
     def get_function_name(self) -> Optional[str]:
         if isinstance(self.base, GlobalRef):
@@ -140,14 +142,19 @@ class FunctionCall(NegateableExpression):
 
         name = self.get_function_name()
         if name:
-            return name == fn.__name__ and len(self.args) == len(
+            return name == fn.__name__ and len(self.pargs) + len(self.kwargs) == len(
                 inspect.signature(fn).parameters
             )
         else:
             return False
 
     def __str__(self):
-        args = ", ".join(str(arg) for arg in self.args)
+        args = ", ".join(
+            itertools.chain(
+                (str(parg) for parg in self.pargs),
+                (f"{name}={value}" for (name, value) in self.kwargs.items()),
+            )
+        )
         return f"{self.base}({args})"
 
 

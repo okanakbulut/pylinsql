@@ -110,6 +110,22 @@ class TestDataTransfer(DatabaseTestCase):
             )
             self.assertIsNotNone(result)
             self.assertIsInstance(result, PersonCity)
+            self.assertEqual(result.family_name, "American")
+            self.assertEqual(result.given_name, "Abel")
+            self.assertEqual(result.city, "Aberdeen")
+
+            result = await conn.select_first(
+                PersonCity(
+                    given_name=p.given_name, family_name=p.family_name, city=a.city
+                )
+                for p, a in entity(Person, Address)
+                if inner_join(p.perm_address_id, a.id)
+            )
+            self.assertIsNotNone(result)
+            self.assertIsInstance(result, PersonCity)
+            self.assertEqual(result.family_name, "American")
+            self.assertEqual(result.given_name, "Abel")
+            self.assertEqual(result.city, "Aberdeen")
 
     async def test_insert_or_select(self):
         async with async_database.connection(self.params) as conn:
