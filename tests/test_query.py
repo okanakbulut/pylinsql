@@ -256,15 +256,52 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
         # verify query string is the same
         self.assertEqual(query1, query2)
 
-    def test_conj_disj_in_yield(self):
-        with self.assertRaises(NotImplementedError):
-            self.assertQueryIs(
-                select(
-                    count_if(p.id, date(1980, 1, 1) <= p.birth_date <= date(1990, 1, 1))
-                    for p in entity(Person)
-                ),
-                """SELECT COUNT(p.id) FILTER (WHERE MAKE_DATE(1980, 1, 1) <= p.birth_date AND p.birth_date <= MAKE_DATE(1990, 1, 1)) FROM "Person" AS p""",
-            )
+    def disabled_test_conj_in_yield(self):
+        self.assertQueryIs(
+            select(count_if(p.id, False or True and True) for p in entity(Person)),
+            """SELECT COUNT(p.id) FILTER (WHERE False OR True AND True) FROM "Person" AS p""",
+        )
+
+    def disabled_test_comparison_chain_in_yield(self):
+        #       0 LOAD_FAST                0 (.0)
+        # >>    2 FOR_ITER                56 (to 60)
+        #       4 STORE_FAST               1 (p)
+        #       6 LOAD_GLOBAL              0 (count_if)
+        #       8 LOAD_FAST                1 (p)
+        #      10 LOAD_ATTR                1 (id)
+        #      12 LOAD_GLOBAL              2 (date)
+        #      14 LOAD_CONST               0 (1980)
+        #      16 LOAD_CONST               1 (1)
+        #      18 LOAD_CONST               1 (1)
+        #      20 CALL_FUNCTION            3
+        #      22 LOAD_FAST                1 (p)
+        #      24 LOAD_ATTR                3 (birth_date)
+        #      26 DUP_TOP
+        #      28 ROT_THREE
+        #      30 COMPARE_OP               1 (<=)
+        #      32 JUMP_IF_FALSE_OR_POP    48
+        #      34 LOAD_GLOBAL              2 (date)
+        #      36 LOAD_CONST               2 (1990)
+        #      38 LOAD_CONST               1 (1)
+        #      40 LOAD_CONST               1 (1)
+        #      42 CALL_FUNCTION            3
+        #      44 COMPARE_OP               1 (<=)
+        #      46 JUMP_FORWARD             4 (to 52)
+        # >>   48 ROT_TWO
+        #      50 POP_TOP
+        # >>   52 CALL_FUNCTION            2
+        #      54 YIELD_VALUE
+        #      56 POP_TOP
+        #      58 JUMP_ABSOLUTE            2
+        # >>   60 LOAD_CONST               3 (None)
+        #      62 RETURN_VALUE
+        self.assertQueryIs(
+            select(
+                count_if(p.id, date(1980, 1, 1) <= p.birth_date <= date(1990, 1, 1))
+                for p in entity(Person)
+            ),
+            """SELECT COUNT(p.id) FILTER (WHERE MAKE_DATE(1980, 1, 1) <= p.birth_date AND p.birth_date <= MAKE_DATE(1990, 1, 1)) FROM "Person" AS p""",
+        )
 
     def test_fail_wrong_type(self):
         with self.assertRaises(TypeError):
