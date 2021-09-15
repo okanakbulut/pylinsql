@@ -256,7 +256,7 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
         # verify query string is the same
         self.assertEqual(query1, query2)
 
-    def disabled_test_conj_in_yield(self):
+    def test_conj_in_yield(self):
         self.assertQueryIs(
             select(count_if(p.id, False or True and True) for p in entity(Person)),
             """SELECT COUNT(p.id) FILTER (WHERE False OR True AND True) FROM "Person" AS p""",

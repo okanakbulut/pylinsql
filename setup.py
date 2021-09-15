@@ -10,7 +10,7 @@ with open(os.path.join(ROOT, "README.md"), "r") as f:
 
 setup(
     name="pylinsql",
-    version="0.1.10",
+    version="0.1.12",
     description="Language-Integrated SQL Queries in Python",
     long_description=README,
     long_description_content_type="text/markdown",

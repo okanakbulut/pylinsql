@@ -163,34 +163,90 @@ and Semantics-Preserving Transformations](https://www.ndss-symposium.org/wp-cont
 
 *pylinsql* utilizes some more advanced features and programming language concepts such as Python intermediate language, low-level code analysis, graph theory and parsers/generators.
 
+As an example, let's consider the following Python generator expression:
+```python
+(p.family_name, p.given_name) for p in entity(Person) if p.given_name == "John" and p.family_name != "Doe"
+```
+This has a _conditional part_:
+```python
+p.given_name == "John" and p.family_name != "Doe"
+```
+and a _yield part_:
+```python
+(p.family_name, p.given_name)
+```
+
 *pylinsql* performs several steps to construct a SQL query string from a Python generator expression:
 
-1. De-compilation.
+1. Disassembly.
 
     *pylinsql* uses the Python module [dis](https://docs.python.org/3/library/dis.html) to retrieve a Python generator expression as a series of instructions, which are low-level intermediate language statements such as BINARY_ADD (to add two numbers on the top of the stack), CALL_FUNCTION (to call a function with arguments on the stack), LOAD_GLOBAL (push a global variable to the top of the stack), or POP_JUMP_IF_TRUE (jump to a label if the value on the top of the stack is true).
 
-2. Extract basic blocks to create control flow graph (CFG).
+2. Extract basic blocks.
 
-    A basic block is a series of instructions that usually starts with a label (that jump instructions point to), and ends with a (conditional or unconditional) jump statement (e.g. POP_JUMP_IF_TRUE). *pylinsql* creates basic blocks from the conditional part of a Python generator expression. For example, given the Python generator expression,
-    ```python
-    p for p in entity(Person) if p.given_name == "John" and p.family_name != "Doe"
+    A basic block is a series of instructions that starts with a label (that jump instructions point to) and/or ends with a (conditional or unconditional) jump statement (e.g. POP_JUMP_IF_TRUE). For example, the following snippet shows the disassembly of our sample Python generator expression (including both the conditional and the yield part), with horizontal bars separating basic blocks. Target labels for jump instructions are shown with `>>`. The number in the first column is the instruction address.
+
     ```
-    it extracts the instructions that constitute the part
-    ```python
-    if p.given_name == "John" and p.family_name != "Doe"
+             0 LOAD_FAST                0 (.0)
+    ------------------------------------------------------------
+    >>       2 FOR_ITER                38 (to 42)
+             4 STORE_FAST               1 (p)
+             6 LOAD_FAST                1 (p)
+             8 LOAD_ATTR                0 (given_name)
+            10 LOAD_CONST               0 ('John')
+            12 COMPARE_OP               2 (==)
+            14 POP_JUMP_IF_FALSE        2
+    ------------------------------------------------------------
+            16 LOAD_FAST                1 (p)
+            18 LOAD_ATTR                1 (family_name)
+            20 LOAD_CONST               1 ('Doe')
+            22 COMPARE_OP               3 (!=)
+            24 POP_JUMP_IF_FALSE        2
+    ------------------------------------------------------------
+            26 LOAD_FAST                1 (p)
+            28 LOAD_ATTR                1 (family_name)
+            30 LOAD_FAST                1 (p)
+            32 LOAD_ATTR                0 (given_name)
+            34 BUILD_TUPLE              2
+            36 YIELD_VALUE
+            38 POP_TOP
+            40 JUMP_ABSOLUTE            2
+    ------------------------------------------------------------
+    >>      42 LOAD_CONST               2 (None)
+            44 RETURN_VALUE
     ```
 
-    The control flow graph has basic blocks as nodes, and jump instruction labels as edges. For example, a basic block that ends with POP_JUMP_IF_TRUE has two outgoing edges: one points to the basic block targeted when the condition is true, and the other points to the next basic block (i.e. the next statement in the program).
+3. Create control flow graph (CFG).
 
-3. Create an abstract syntax tree (AST).
+    The control flow graph has basic blocks as nodes, and jump instruction targets as edges. For example, a basic block that ends with POP_JUMP_IF_TRUE has two outgoing edges: one points to the basic block targeted when the condition is true, and the other points to the next basic block (i.e. the next statement in the program).
 
-    *pylinsql* connects the basic blocks along jump instructions, and uses the jump instruction conditions to create a single abstract syntax expression. The expression no longer contains any jumps, instead it is a series of conjunctions (`and`), disjunctions (`or`) and negations (`not`), which join boolean expressions (e.g. comparisons).
+    *pylinsql* uses a jump resolver to translate numeric instruction addresses into control flow graph edges.
 
-4. Analyze the abstract syntax tree.
+4. Merge nodes that correspond to conditional expressions and loop conditions.
+
+    When you have a conditional expression such as
+    ```python
+    p.given_name == "John" and p.family_name != "Doe"
+    ```
+    then the expression is represented in low-level instructions as a series of basic blocks, interconnected with jump instructions. *pylinsql* merges nodes corresponding to these basic blocks into a single compound node. For example, the above expression would become `NodeConjunction(a, b)` where `a` stands for the node representing the equality test and `b` stands for that of the inequality test, and `NodeConjunction` captures the intent of the Python keyword `and`.
+
+    *pylinsql* merges nodes in a well-defined order. First, it merges all conditions that act like expressions (e.g. they are part of a function call). Second, it merges the condition that constitutes the loop condition of the Python generator expression. The end result is a chain of nodes, where each node is a simple node (a single basic block), or a composite node: a *sequence*, a *conjunction* or a *disjunction*. All composite nodes are also chains inside, with no branches.
+
+5. Create an abstract syntax tree (AST).
+
+    *pylinsql* converts the node chains into an abstract representation with the help of an evaluator. The evaluator builds a symbolic expression (e.g. `0 * 1 + 2` or `a and b and c`) from a chain of nodes and the low-level instructions stored in them.
+
+    The evaluator maintains a stack, mimicking how the Python interpreter works. It goes through the instructions of a basic block, and manipulates the stack following the instructions. Whenever global or local symbols are referenced (e.g. constants or variable names), the evaluator pushes their symbolic representation. Any further operations are performed with this symbolic representation. For example, when encountering the instruction BINARY_ADD, which adds two numbers popping off items from the top of the stack and pushing the result, the evaluator will pop off two symbolic expressions (e.g. `Variable(a)` and `Constant(2)`), and push a new symbolic expression (e.g. `Addition(Variable(a), Constant(2))`).
+
+    Conjunctions and disjunctions are handled in a special way. These are represented by multiple basic blocks, interconnected by conditional jump instructions.
+
+    Whenever the AST builder encounters a conjunction, it tells the evaluator to process jump instructions as if the condition evaluated to true. In a structured expression such as `a and b and c`, this would force evaluating the rest of the expression, and not short-circuit at `a` or `a and b`. Likewise, jump instructions in blocks of a disjunction are processed as if conditions evaluated to false. In either case, the top of the stack is going to contain a symbolic expression for all the sub-expressions combined into a conjunction or disjunction, respectively, as the evaluator jumps through all basic blocks that comprise them.
+
+6. Analyze the abstract syntax tree.
 
     *pylinsql* checks if the expression is well-formed, e.g. whether you join objects along existing properties (e.g. `Person` has `given_name`).
 
-5. Emit an SQL statement.
+7. Emit an SQL statement.
 
     *pylinsql* maps Python function calls into SQL statement equivalents, e.g. `asc()` becomes `ORDER BY`, `inner_join()` maps to an `INNER JOIN` in a `FROM` clause, a condition on a `min()` becomes part of `HAVING`, `GROUP BY` is generated based on the result expressions in the original Python generator expression, etc.
     

@@ -8,10 +8,20 @@ import dis
 import itertools
 from dataclasses import dataclass
 from types import CodeType
-from typing import Any, Iterable, List, Tuple
+from typing import Iterable, List, Tuple
 
 from .ast import *
-from .node import AbstractNode, is_expr_condition, is_loop_condition
+from .evaluator import Evaluator, JumpResolver
+from .node import (
+    AbstractNode,
+    ConditionExpressionChecker,
+    LoopConditionChecker,
+    NodeConjunction,
+    NodeDisjunction,
+    NodeInstructions,
+    NodeSequence,
+    NodeVisitor,
+)
 
 
 def all_equal(iterable: Iterable[T]) -> bool:
@@ -28,288 +38,6 @@ def pairwise(iterable: Iterable[T]) -> Iterable[Tuple[T, T]]:
     a, b = itertools.tee(iterable)
     next(b, None)
     return zip(a, b)
-
-
-Stack = List[Expression]
-
-
-@dataclass(frozen=True)
-class _IteratorValue:
-    "Placeholder for iterator value pushed to the stack by the FOR_ITER instruction."
-
-    pass
-
-
-class JumpResolver:
-    _next: int
-
-    def process(self, instr: dis.Instruction) -> Tuple[int, int]:
-        self._next = instr.offset + 2  # automatically fall through to subsequent block
-        fn = getattr(self, instr.opname, None)
-
-        if fn is not None:
-            return fn(instr.arg)
-        else:
-            return self._next, self._next
-
-    def test(self, instr: dis.Instruction) -> bool:
-        "True if the Python instruction involves a jump with a target, e.g. JUMP_ABSOLUTE or POP_JUMP_IF_TRUE."
-
-        return getattr(self, instr.opname, None) is not None
-
-    def JUMP_ABSOLUTE(self, target):
-        return target, target
-
-    def JUMP_FORWARD(self, delta):
-        target = self._next + delta
-        return target, target
-
-    def JUMP_IF_FALSE_OR_POP(self, target):
-        return self._next, target
-
-    def JUMP_IF_TRUE_OR_POP(self, target):
-        return target, self._next
-
-    def POP_JUMP_IF_FALSE(self, target):
-        return self._next, target
-
-    def POP_JUMP_IF_TRUE(self, target):
-        return target, self._next
-
-    def FOR_ITER(self, delta):
-        return self._next, self._next + delta
-
-    def RETURN_VALUE(self, _):
-        return None, None
-
-
-@dataclass
-class _BasicBlockExpr:
-    on_true: Stack = None
-    on_false: Stack = None
-    # expression on which the final jump instruction in the block is evaluated
-    jump_expr: Optional[Expression] = None
-    # expression that is produced by a YIELD_VALUE instruction
-    yield_expr: Optional[Expression] = None
-    # expression that is returned by a RETURN_VALUE instruction
-    return_expr: Optional[Expression] = None
-
-    def get_expr(self) -> Expression:
-        if self.jump_expr:
-            return self.jump_expr
-        elif self.on_true == self.on_false and len(self.on_true) > 0:
-            return self.on_true[-1]
-        else:
-            return None
-
-
-class _Disassembler:
-    codeobject: CodeType
-    stack: Stack
-    variables: List[str]
-
-    _expr: _BasicBlockExpr
-
-    def __init__(self, codeobject):
-        self.codeobject = codeobject
-        self.stack = []
-        self.variables = []
-
-    def _reset(self):
-        self._expr = _BasicBlockExpr()
-
-    def process_block(
-        self, instructions: List[dis.Instruction], stack: Stack
-    ) -> _BasicBlockExpr:
-        "Process a single basic block, ending with a (conditional) jump."
-
-        self.stack = stack.copy()
-        self._reset()
-        for instruction in instructions:
-            fn = getattr(self, instruction.opname)
-            fn(instruction.arg)
-
-        # handle fall-through from this block to the following block
-        if self._expr.on_true is None:
-            self._expr.on_true = self.stack.copy()
-        if self._expr.on_false is None:
-            self._expr.on_false = self.stack.copy()
-
-        result = self._expr
-        self._reset()
-        return result
-
-    def LOAD_ATTR(self, name_index):
-        base = self.stack.pop()
-        self.stack.append(AttributeAccess(base, self.codeobject.co_names[name_index]))
-
-    def LOAD_CONST(self, const_index):
-        self.stack.append(Constant(self.codeobject.co_consts[const_index]))
-
-    def LOAD_FAST(self, var_num):
-        self.stack.append(LocalRef(self.codeobject.co_varnames[var_num]))
-
-    def LOAD_GLOBAL(self, name_index):
-        self.stack.append(GlobalRef(self.codeobject.co_names[name_index]))
-
-    def LOAD_DEREF(self, i):
-        if i < len(self.codeobject.co_cellvars):
-            name = self.codeobject.co_cellvars[i]
-        else:
-            name = self.codeobject.co_freevars[i - len(self.codeobject.co_cellvars)]
-        self.stack.append(ClosureRef(name))
-
-    def STORE_FAST(self, var_num):
-        self.stack.pop()
-        self.variables.append(self.codeobject.co_varnames[var_num])
-
-    def _pop_func_args(self, argc: int) -> List[Expression]:
-        args = []
-        for _ in range(argc):
-            args.append(self.stack.pop())
-        args.reverse()
-        return args
-
-    def CALL_FUNCTION(self, argc):
-        args = self._pop_func_args(argc)
-        func = self.stack.pop()
-        self.stack.append(FunctionCall(func, args))
-
-    def CALL_FUNCTION_KW(self, argc):
-        # keyword arguments with keyword names supplied in a tuple
-        const: Constant = self.stack.pop()
-        if not isinstance(const.value, tuple):
-            raise RuntimeError("keyword argument names must be supplied in a tuple")
-        names: Tuple[str, ...] = const.value
-        values = self._pop_func_args(len(names))
-        kwargs = {name: value for name, value in zip(names, values)}
-
-        # positional arguments in reverse order
-        pargs = []
-        for _ in range(argc - len(names)):
-            pargs.append(self.stack.pop())
-        pargs.reverse()
-
-        func = self.stack.pop()
-        self.stack.append(FunctionCall(func, pargs, kwargs))
-
-    def _unary_op(self, cls):
-        expr = self.stack.pop()
-        self.stack.append(cls(expr))
-
-    UNARY_POSITIVE = lambda self, _: self._unary_op(UnaryPlus)
-    UNARY_NEGATIVE = lambda self, _: self._unary_op(UnaryMinus)
-    UNARY_INVERT = lambda self, _: self._unary_op(BitwiseNot)
-
-    def _binary_op(self, cls):
-        right = self.stack.pop()
-        left = self.stack.pop()
-        self.stack.append(cls(left, right))
-
-    BINARY_POWER = lambda self, _: self._binary_op(Exponentiation)
-    BINARY_MULTIPLY = lambda self, _: self._binary_op(Multiplication)
-    BINARY_TRUE_DIVIDE = lambda self, _: self._binary_op(Division)
-    BINARY_ADD = lambda self, _: self._binary_op(Addition)
-    BINARY_SUBTRACT = lambda self, _: self._binary_op(Subtraction)
-    BINARY_LSHIFT = lambda self, _: self._binary_op(BitwiseLeftShift)
-    BINARY_RSHIFT = lambda self, _: self._binary_op(BitwiseRightShift)
-    BINARY_AND = lambda self, _: self._binary_op(BitwiseAnd)
-    BINARY_XOR = lambda self, _: self._binary_op(BitwiseXor)
-    BINARY_OR = lambda self, _: self._binary_op(BitwiseOr)
-
-    def _compare_op(self, op: str, invert: bool):
-        right = self.stack.pop()
-        left = self.stack.pop()
-        comp = Comparison(op, left, right)
-        if invert:
-            self.stack.append(comp.negate())
-        else:
-            self.stack.append(comp)
-
-    COMPARE_OP = lambda self, opname: self._compare_op(dis.cmp_op[opname], False)
-
-    # new in version 3.9
-    CONTAINS_OP = lambda self, invert: self._compare_op("in", invert)
-    IS_OP = lambda self, invert: self._compare_op("is", invert)
-
-    def JUMP_ABSOLUTE(self, target):
-        pass
-
-    def JUMP_FORWARD(self, delta):
-        pass
-
-    def JUMP_IF_FALSE_OR_POP(self, target):
-        self._expr.on_false = self.stack.copy()
-        self._expr.jump_expr = self.stack.pop()
-        self._expr.on_true = self.stack.copy()
-
-    def JUMP_IF_TRUE_OR_POP(self, target):
-        self._expr.on_true = self.stack.copy()
-        self._expr.jump_expr = self.stack.pop()
-        self._expr.on_false = self.stack.copy()
-
-    def _pop_jump(self):
-        self._expr.jump_expr = self.stack.pop()
-        self._expr.on_true = self.stack.copy()
-        self._expr.on_false = self.stack.copy()
-
-    POP_JUMP_IF_FALSE = lambda self, target: self._pop_jump()
-    POP_JUMP_IF_TRUE = lambda self, target: self._pop_jump()
-
-    def DUP_TOP(self, _):
-        self.stack.append(self.stack[-1])
-
-    def DUP_TOP_TWO(self, _):
-        item1 = self.stack[-1]
-        item2 = self.stack[-2]
-        self.stack.extend([item2, item1])
-
-    def POP_TOP(self, _):
-        self.stack.pop()
-
-    def ROT_TWO(self, _):
-        self.stack[-1], self.stack[-2] = self.stack[-2], self.stack[-1]
-
-    def ROT_THREE(self, _):
-        self.stack[-1], self.stack[-2], self.stack[-3] = (
-            self.stack[-2],
-            self.stack[-3],
-            self.stack[-1],
-        )
-
-    def ROT_FOUR(self, _):
-        self.stack[-1], self.stack[-2], self.stack[-3], self.stack[-4] = (
-            self.stack[-2],
-            self.stack[-3],
-            self.stack[-4],
-            self.stack[-1],
-        )
-
-    def FOR_ITER(self, _):
-        self._expr.on_false = self.stack.copy()
-        self.stack.append(_IteratorValue())
-        self._expr.on_true = self.stack.copy()
-
-    def _sequence_op(self, count, cls):
-        values = []
-        for _ in range(count):
-            values.append(self.stack.pop())
-        values.reverse()
-        self.stack.append(cls(values))
-
-    BUILD_TUPLE = lambda self, count: self._sequence_op(count, TupleExpression)
-    BUILD_LIST = lambda self, count: self._sequence_op(count, ListExpression)
-
-    def UNPACK_SEQUENCE(self, count):
-        value = self.stack.pop()
-        for index in range(count - 1, -1, -1):
-            self.stack.append(IndexAccess(value, index))
-
-    def RETURN_VALUE(self, _):
-        self._expr.return_expr = self.stack.pop()
-
-    def YIELD_VALUE(self, _):
-        self._expr.yield_expr = self.stack.pop()
 
 
 @dataclass
@@ -343,14 +71,6 @@ def _get_basic_blocks(instructions: List[dis.Instruction]) -> List[_BasicBlockSp
 
 
 @dataclass
-class _NodeOutputs:
-    # stack passed on to the following block when condition is true
-    on_true: Stack = None
-    # stack passed on to the following block when condition is false
-    on_false: Stack = None
-
-
-@dataclass
 class CodeExpression:
     local_vars: List[str]
     conditional_expr: Expression
@@ -361,20 +81,18 @@ class CodeExpressionAnalyzer:
     code_object: CodeType
     instructions: List[dis.Instruction]
 
-    _yield_expr: Expression
-
     def __init__(self, code_object: CodeType):
         self.code_object = code_object
         self.instructions = list(dis.Bytecode(self.code_object))
-        self._yield_expr = None
 
     def _get_abstract_nodes(self, blocks: List[_BasicBlockSpan]) -> List[AbstractNode]:
-
         jmp = JumpResolver()
         nodes: List[AbstractNode] = []
-        node_by_offset: Dict[Tuple[int, int]] = {}
+        node_by_offset: Dict[int, Tuple[AbstractNode, int, int]] = {}
         for block in blocks:
-            node = AbstractNode()
+            node = AbstractNode(
+                NodeInstructions(self.instructions[block.start_index : block.end_index])
+            )
             nodes.append(node)
             on_true, on_false = jmp.process(
                 self.instructions[block.start_index : block.end_index][-1],
@@ -393,86 +111,76 @@ class CodeExpressionAnalyzer:
 
         return nodes
 
-    def _disassemble(
-        self, blocks: List[_BasicBlockSpan], nodes: List[AbstractNode]
-    ) -> List[str]:
+    def _disassemble(self, nodes: List[AbstractNode]) -> CodeExpression:
+        # dis.dis(self.code_object)
+        entry_node = nodes[0]
 
-        node_outputs: Dict[AbstractNode, _NodeOutputs] = {
-            node: _NodeOutputs() for node in nodes
-        }
-        disassembler = _Disassembler(self.code_object)
-        for index, block, node in zip(range(len(blocks)), blocks, nodes):
-            stack: Stack = None
-            if not node.origins:
-                # function block entry point
-                stack = []
-            else:
-                cond_nodes = None
-                if len(node.origins) > 1:
-                    # possible terminal node of a conditional block
-                    for k in range(2, index):
-                        if is_expr_condition(nodes[index - k : index]):
-                            cond_nodes = nodes[index - k : index]
-                            break
+        # merge subgraphs that correspond to conditional expressions into a single node
+        for index, node in enumerate(nodes):
+            checker = ConditionExpressionChecker()
 
-                if cond_nodes is not None:
-                    output_on_true = (
-                        node_outputs[origin].on_true[:-1]
-                        for origin in node.get_origin_true()
-                    )
-                    output_on_false = (
-                        node_outputs[origin].on_false[:-1]
-                        for origin in node.get_origin_false()
-                    )
-                    output_stacks = itertools.chain(output_on_true, output_on_false)
-                    for output_stack in output_stacks:
-                        if output_stack is None:
-                            pass
-                        elif stack is None:
-                            stack = output_stack
-                        elif stack != output_stack:
-                            raise NotImplementedError()
+            cond_nodes = None
+            if len(node.origins) > 1:
+                # possible terminal node of a conditional block
+                for k in range(2, index):
+                    candidate_nodes = nodes[index - k : index]
+                    if checker.matches(candidate_nodes):
+                        cond_nodes = candidate_nodes
+                        break
 
-                    node = self._get_expr_condition(cond_nodes, node)
-                    node_outputs[node] = _NodeOutputs()
-                    stack.append(node.expr)
+            if cond_nodes is not None:
+                expr_head_node = cond_nodes[0]
+                expr_cond_node = self._get_expr_condition(cond_nodes, node)
 
-                else:
-                    output_on_true = (
-                        node_outputs[origin].on_true
-                        for origin in node.get_origin_true()
-                    )
-                    output_on_false = (
-                        node_outputs[origin].on_false
-                        for origin in node.get_origin_false()
-                    )
-                    output_stacks = itertools.chain(output_on_true, output_on_false)
-                    for output_stack in output_stacks:
-                        if output_stack is None:
-                            pass
-                        elif stack is None:
-                            stack = output_stack
-                        elif stack != output_stack:
-                            raise NotImplementedError()
+                # re-wire edges to include new node and exclude old nodes
+                expr_cond_node.seize_origins(expr_head_node)
+                expr_cond_node.set_target(checker.target_node, checker.target_node)
 
-            result = disassembler.process_block(
-                self.instructions[block.start_index : block.end_index],
-                stack,
+        # remove prolog and epilog from generator
+        # prolog pushes the single iterable argument (a.k.a. ".0") to the stack that a generator expression receives:
+        #       0 LOAD_FAST                0 (.0)
+        # epilog pops the stack and returns None to indicate end of iteration
+        # >>   48 LOAD_CONST               4 (None)
+        #      50 RETURN_VALUE
+        nodes = entry_node.traverse_top_down()
+        prolog = nodes[0]
+        body = nodes[1:-1]
+        epilog = nodes[-1]
+
+        checker = LoopConditionChecker()
+        if len(body) > 2 and checker.matches(body):
+            # extract conditional expression
+            conditional = [
+                node
+                for node in body
+                if node is not checker.iterator_node and node is not checker.body_node
+            ]
+            loop_cond_node = self._get_loop_condition(
+                conditional, checker.iterator_node, checker.body_node
             )
 
-            node.expr = result.jump_expr
-            node_outputs[node].on_true = result.on_true
-            node_outputs[node].on_false = result.on_false
+            # re-wire edges to include new node and exclude old nodes
+            loop_expr = NodeSequence(
+                [checker.iterator_node, loop_cond_node, checker.body_node]
+            )
+            loop_node = AbstractNode(loop_expr)
 
-            if result.yield_expr:
-                if self._yield_expr is None:
-                    self._yield_expr = result.yield_expr
-                elif self._yield_expr != result.yield_expr:
-                    raise NotImplementedError(
-                        "conditional expression in yield part of generator expression"
-                    )
+            loop_node.seize_origins(checker.iterator_node)
+            loop_node.set_target(checker.exit_node, checker.exit_node)
+        else:
+            loop_expr = NodeSequence(body)
+            loop_node = AbstractNode(loop_expr)
 
-        return disassembler.variables
+        seq_expr = NodeSequence([prolog, loop_node, epilog])
+        seq_node = AbstractNode(seq_expr)
+
+        # evaluate nodes in appropriate order to produce an expression
+        evaluator = Evaluator(self.code_object)
+        visitor = NodeVisitor(evaluator)
+        visitor.visit(seq_node)
+        cond_expr = visitor.visit(seq_node)
+
+        return CodeExpression(evaluator.variables, cond_expr, visitor.yield_expr)
 
     def _get_expr_condition(
         self, nodes: List[AbstractNode], target: AbstractNode
@@ -481,7 +189,12 @@ class CodeExpressionAnalyzer:
 
         return self._merge_conditional_nodes(nodes, target, target)
 
-    def _get_loop_condition(self, nodes: List[AbstractNode]) -> Expression:
+    def _get_loop_condition(
+        self,
+        nodes: List[AbstractNode],
+        iterator_node: AbstractNode,
+        yield_node: AbstractNode,
+    ) -> AbstractNode:
         "Extracts the loop condition from the 'if' part of a generator expression."
 
         # identify loop structural elements
@@ -494,12 +207,8 @@ class CodeExpressionAnalyzer:
         #      18 POP_TOP
         #      20 JUMP_ABSOLUTE            2
         # conditional nodes (several interconnected blocks that jump on conditions)
-        loop_head = nodes[0]
-        cond_nodes = nodes[1:-1]
-        loop_body = nodes[-1]
 
-        cond_node = self._merge_conditional_nodes(cond_nodes, loop_body, loop_head)
-        return cond_node.expr
+        return self._merge_conditional_nodes(nodes, yield_node, iterator_node)
 
     def _merge_conditional_nodes(
         self,
@@ -508,6 +217,7 @@ class CodeExpressionAnalyzer:
         on_false: AbstractNode,
     ) -> AbstractNode:
 
+        # create special nodes `True` and `False`
         true_node = AbstractNode(Constant(True))
         false_node = AbstractNode(Constant(False))
 
@@ -528,27 +238,34 @@ class CodeExpressionAnalyzer:
                     node.set_on_false(false_node)
                 elif node.on_false is on_true:
                     node.set_on_false(true_node)
+            on_false.remove_origins()
 
         # eliminate nodes that correspond to unconditional forward jumps
-        cond_nodes: List[AbstractNode] = []
         for node in nodes:
-            if (
-                node.on_true is node.on_false
-                and node.on_true is not None
-                and node.on_false is not None
-            ):
-                node.on_true.seize_origins(node)
+            if node.on_true is node.on_false and node.on_true is not None:
+                for origin in node.origins:
+                    seq_expr = NodeSequence([origin])
+                    seq_node = AbstractNode(seq_expr)
+                    seq_node.seize_origins(origin)
+                    if origin.on_true is node:
+                        seq_node.set_on_true(node.on_true)
+                    else:
+                        seq_node.set_on_true(origin.on_true)
+                    origin.set_on_true(None)
+                    if origin.on_false is node:
+                        seq_node.set_on_false(node.on_false)
+                    else:
+                        seq_node.set_on_false(origin.on_false)
+                    origin.set_on_false(None)
+
+                node.remove_origins()
                 node.set_target(None, None)
-            else:
-                cond_nodes.append(node)
 
-        # disconnect incoming edge
-        root = cond_nodes[0]
-        root.origins = []
-
-        # append special nodes `True` and `False`
-        cond_nodes.append(true_node)
-        cond_nodes.append(false_node)
+        if on_true is on_false:
+            root = nodes[0]
+        else:
+            root = on_false.on_true
+        cond_nodes = root.traverse_top_down()
 
         # align DAG edge colors such that all incoming edges are either green (true) edges or red (false) edges
         marked = set()
@@ -590,7 +307,7 @@ class CodeExpressionAnalyzer:
                     end += 1
 
                 if end - start > 1:
-                    conj_expr = Conjunction([n.expr for n in sorted_nodes[start:end]])
+                    conj_expr = NodeConjunction([n for n in sorted_nodes[start:end]])
                     conj_node = AbstractNode(conj_expr)
                     conj_node.set_target(
                         sorted_nodes[end - 1].on_true, sorted_nodes[start].on_false
@@ -611,7 +328,7 @@ class CodeExpressionAnalyzer:
                     end += 1
 
                 if end - start > 1:
-                    disj_expr = Disjunction([n.expr for n in sorted_nodes[start:end]])
+                    disj_expr = NodeDisjunction([n for n in sorted_nodes[start:end]])
                     disj_node = AbstractNode(disj_expr)
                     disj_node.set_target(
                         sorted_nodes[start].on_true, sorted_nodes[end - 1].on_false
@@ -633,7 +350,7 @@ class CodeExpressionAnalyzer:
                 sorted_nodes[0].twist()
 
         if idle:
-            raise NotImplementedError()
+            raise NotImplementedError("unable to simplify conditional expression")
 
         return sorted_nodes[0]
 
@@ -641,23 +358,4 @@ class CodeExpressionAnalyzer:
         # convert instructions into abstract nodes with symbolic expressions
         blocks = _get_basic_blocks(self.instructions)
         nodes = self._get_abstract_nodes(blocks)
-        variables = self._disassemble(blocks, nodes)
-
-        # remove prolog and epilog from generator
-        # prolog pushes the single iterable argument (a.k.a. ".0") to the stack that a generator expression receives:
-        #       0 LOAD_FAST                0 (.0)
-        # epilog pops the stack and returns None to indicate end of iteration
-        # >>   48 LOAD_CONST               4 (None)
-        #      50 RETURN_VALUE
-        nodes = nodes[1:-1]
-
-        # extract conditional expression
-        cond_expr = self._get_loop_condition(nodes) if len(nodes) > 2 else None
-
-        return CodeExpression(variables, cond_expr, self._yield_expr)
-
-    def _show_blocks(self, blocks):
-        for block in blocks:
-            for instr in self.instructions[block.start_index : block.end_index]:
-                print(instr.opname)
-            print("----")
+        return self._disassemble(nodes)
