@@ -375,7 +375,7 @@ class _QueryVisitor:
 
     def _sql_unary_expr(self, op: str, unary_expr: UnaryExpression) -> str:
         expr = self.visit(unary_expr.expr)
-        return f"{op} {expr}"
+        return f"{op}{expr}"
 
     def _sql_binary_expr(self, op: str, binary_expr: BinaryExpression) -> str:
         left = self.visit(binary_expr.left)
@@ -389,6 +389,13 @@ class _QueryVisitor:
     @_visit.register
     def _(self, disj: Disjunction) -> str:
         return self._sql_where_expr("OR", disj.exprs)
+
+    @_visit.register
+    def _(self, branch: IfThenElse) -> str:
+        condition = self.visit(branch.condition)
+        on_true = self.visit(branch.on_true)
+        on_false = self.visit(branch.on_false)
+        return f"CASE WHEN {condition} THEN {on_true} ELSE {on_false} END"
 
     @_visit.register
     def _(self, neg: Negation) -> str:

@@ -172,6 +172,7 @@ class Evaluator:
     UNARY_POSITIVE = lambda self, _: self._unary_op(UnaryPlus)
     UNARY_NEGATIVE = lambda self, _: self._unary_op(UnaryMinus)
     UNARY_INVERT = lambda self, _: self._unary_op(BitwiseNot)
+    UNARY_NOT = lambda self, _: self._unary_op(Negation)
 
     def _binary_op(self, cls):
         right = self.stack.pop()
@@ -211,7 +212,7 @@ class Evaluator:
         pass
 
     def JUMP_IF_FALSE_OR_POP(self, target):
-        if not self._jump_cond:
+        if self._jump_cond:
             self._expr.jump_expr = self.stack[-1]
             self._expr.stack = self.stack
         else:
@@ -222,7 +223,7 @@ class Evaluator:
         if self._jump_cond:
             self._expr.jump_expr = self.stack[-1]
             self._expr.stack = self.stack
-        if not self._jump_cond:
+        else:
             self._expr.jump_expr = self.stack.pop()
             self._expr.stack = self.stack
 

@@ -6,6 +6,7 @@ This module is used internally.
 
 import dis
 import itertools
+import os
 from dataclasses import dataclass
 from types import CodeType
 from typing import Iterable, List, Tuple
@@ -18,10 +19,16 @@ from .node import (
     LoopConditionChecker,
     NodeConjunction,
     NodeDisjunction,
+    NodeIfThenElse,
     NodeInstructions,
     NodeSequence,
     NodeVisitor,
 )
+
+
+_DEBUG: bool = int(os.getenv("DEBUG", "0")) != 0
+if _DEBUG:
+    from .plot import plot_directed_graph
 
 
 def all_equal(iterable: Iterable[T]) -> bool:
@@ -109,6 +116,9 @@ class CodeExpressionAnalyzer:
                 node_by_offset[on_false][0] if on_false is not None else None,
             )
 
+        if _DEBUG:
+            plot_directed_graph("Control Flow Graph", nodes)
+
         return nodes
 
     def _disassemble(self, nodes: List[AbstractNode]) -> CodeExpression:
@@ -119,18 +129,18 @@ class CodeExpressionAnalyzer:
         for index, node in enumerate(nodes):
             checker = ConditionExpressionChecker()
 
-            cond_nodes = None
+            expr_nodes = None
             if len(node.origins) > 1:
                 # possible terminal node of a conditional block
                 for k in range(2, index):
                     candidate_nodes = nodes[index - k : index]
                     if checker.matches(candidate_nodes):
-                        cond_nodes = candidate_nodes
+                        expr_nodes = candidate_nodes
                         break
 
-            if cond_nodes is not None:
-                expr_head_node = cond_nodes[0]
-                expr_cond_node = self._get_expr_condition(cond_nodes, node)
+            if expr_nodes is not None:
+                expr_head_node = expr_nodes[0]
+                expr_cond_node = self._get_expr_condition(expr_nodes, node)
 
                 # re-wire edges to include new node and exclude old nodes
                 expr_cond_node.seize_origins(expr_head_node)
@@ -150,28 +160,23 @@ class CodeExpressionAnalyzer:
         checker = LoopConditionChecker()
         if len(body) > 2 and checker.matches(body):
             # extract conditional expression
-            conditional = [
+            loop_nodes = [
                 node
                 for node in body
                 if node is not checker.iterator_node and node is not checker.body_node
             ]
             loop_cond_node = self._get_loop_condition(
-                conditional, checker.iterator_node, checker.body_node
+                loop_nodes, checker.iterator_node, checker.body_node
             )
 
             # re-wire edges to include new node and exclude old nodes
-            loop_expr = NodeSequence(
+            loop_expr = NodeSequence.from_nodes(
                 [checker.iterator_node, loop_cond_node, checker.body_node]
             )
-            loop_node = AbstractNode(loop_expr)
-
-            loop_node.seize_origins(checker.iterator_node)
-            loop_node.set_target(checker.exit_node, checker.exit_node)
         else:
-            loop_expr = NodeSequence(body)
-            loop_node = AbstractNode(loop_expr)
+            loop_expr = NodeSequence.from_nodes(body)
 
-        seq_expr = NodeSequence([prolog, loop_node, epilog])
+        seq_expr = NodeSequence([prolog.expr, loop_expr, epilog.expr])
         seq_node = AbstractNode(seq_expr)
 
         # evaluate nodes in appropriate order to produce an expression
@@ -187,7 +192,39 @@ class CodeExpressionAnalyzer:
     ) -> AbstractNode:
         "Extracts a conditional expression from the 'yield' part of a generator expression."
 
-        return self._merge_conditional_nodes(nodes, target, target)
+        # create special nodes `True` and `False`
+        empty_node = AbstractNode(NodeInstructions([]))
+        sink_nodes: List[AbstractNode] = []
+
+        # redirect nodes that directly jump to next statement node
+        for node in nodes:
+            if node.on_true is node.on_false:
+                if node.on_true is target:
+                    sink_nodes.append(node)
+                continue
+            if node.on_true is target:
+                node.set_on_true(empty_node)
+            if node.on_false is target:
+                node.set_on_false(empty_node)
+
+        for sink_node in sink_nodes:
+            sink_node.set_target(None, None)
+        if len(sink_nodes) < 2:
+            sink_nodes.append(empty_node)
+
+        # align edges to be consistent
+        self._align_edges(nodes)
+
+        root = nodes[0]
+        sorted_nodes = root.topological_sort()
+        for sink_node in sink_nodes:
+            sorted_nodes.remove(sink_node)
+
+        cond_node = self._merge_conditional_nodes(sorted_nodes)
+        cond_node.expr = NodeIfThenElse(
+            cond_node.expr, cond_node.on_true.expr, cond_node.on_false.expr
+        )
+        return cond_node
 
     def _get_loop_condition(
         self,
@@ -208,78 +245,35 @@ class CodeExpressionAnalyzer:
         #      20 JUMP_ABSOLUTE            2
         # conditional nodes (several interconnected blocks that jump on conditions)
 
-        return self._merge_conditional_nodes(nodes, yield_node, iterator_node)
-
-    def _merge_conditional_nodes(
-        self,
-        nodes: List[AbstractNode],
-        on_true: AbstractNode,
-        on_false: AbstractNode,
-    ) -> AbstractNode:
-
         # create special nodes `True` and `False`
         true_node = AbstractNode(Constant(True))
         false_node = AbstractNode(Constant(False))
 
+        true_nodes = yield_node.get_unconditional_ancestors()
+        false_nodes = iterator_node.get_unconditional_ancestors()
+
         # redirect result statement nodes to Boolean result nodes
-        if on_true is on_false:
-            for node in nodes:
-                if node.on_true is on_true:
-                    node.set_on_true(true_node)
-                if node.on_false is on_true:
-                    node.set_on_false(false_node)
-        else:
-            for node in nodes:
-                if node.on_true is on_true:
-                    node.set_on_true(true_node)
-                elif node.on_true is on_false:
-                    node.set_on_true(false_node)
-                if node.on_false is on_false:
-                    node.set_on_false(false_node)
-                elif node.on_false is on_true:
-                    node.set_on_false(true_node)
-            on_false.remove_origins()
-
-        # eliminate nodes that correspond to unconditional forward jumps
         for node in nodes:
-            if node.on_true is node.on_false and node.on_true is not None:
-                for origin in node.origins:
-                    seq_expr = NodeSequence([origin])
-                    seq_node = AbstractNode(seq_expr)
-                    seq_node.seize_origins(origin)
-                    if origin.on_true is node:
-                        seq_node.set_on_true(node.on_true)
-                    else:
-                        seq_node.set_on_true(origin.on_true)
-                    origin.set_on_true(None)
-                    if origin.on_false is node:
-                        seq_node.set_on_false(node.on_false)
-                    else:
-                        seq_node.set_on_false(origin.on_false)
-                    origin.set_on_false(None)
+            if node.on_true in true_nodes:
+                node.set_on_true(true_node)
+            elif node.on_true in false_nodes:
+                node.set_on_true(false_node)
+            if node.on_false in false_nodes:
+                node.set_on_false(false_node)
+            elif node.on_false in true_nodes:
+                node.set_on_false(true_node)
 
-                node.remove_origins()
+        # eliminate edges not part of the conditional expression
+        root = iterator_node.on_true
+        cond_nodes = root.traverse_top_down()
+        for node in nodes:
+            if node not in cond_nodes:
                 node.set_target(None, None)
 
-        if on_true is on_false:
-            root = nodes[0]
-        else:
-            root = on_false.on_true
         cond_nodes = root.traverse_top_down()
 
-        # align DAG edge colors such that all incoming edges are either green (true) edges or red (false) edges
-        marked = set()
-        for node in cond_nodes:
-            edge_type = False
-            for origin in node.origins:
-                if origin in marked:
-                    edge_type = origin.on_true is node
-                    break
-            for origin in node.origins:
-                if edge_type != (origin.on_true is node):
-                    origin.twist()
-                    marked.add(origin)
-        assert all(node.is_origin_consistent() for node in cond_nodes)
+        # align edges to be consistent
+        self._align_edges(cond_nodes)
 
         # ensure that True/False result nodes are consistent with their inputs
         if not all(origin.on_true is true_node for origin in true_node.origins):
@@ -293,26 +287,53 @@ class CodeExpressionAnalyzer:
         sorted_nodes.remove(true_node)
         sorted_nodes.remove(false_node)
 
+        return self._merge_conditional_nodes(sorted_nodes)
+
+    def _align_edges(self, cond_nodes: List[AbstractNode]) -> None:
+        "Align DAG edge colors such that all incoming edges are either green (true) edges or red (false) edges."
+
+        marked = set()
+        for node in cond_nodes:
+            edge_type = False
+            for origin in node.origins:
+                if origin in marked:
+                    edge_type = origin.on_true is node
+                    break
+            for origin in node.origins:
+                if edge_type != (origin.on_true is node):
+                    origin.twist()
+                    marked.add(origin)
+        assert all(node.is_origin_consistent() for node in cond_nodes)
+
+    def _merge_conditional_nodes(
+        self, sorted_nodes: List[AbstractNode]
+    ) -> AbstractNode:
+
+        if _DEBUG:
+            plot_directed_graph("Boolean condition graph", sorted_nodes)
+
         idle = False
         while len(sorted_nodes) > 1:
             replacements = False
 
             for start in range(len(sorted_nodes) - 1):
                 # locate a span of abstract nodes that could form a single conjunction
+                conj_start = sorted_nodes[start]
+                conj_sinks = conj_start.on_false.get_unconditional_descendants()
+
                 end = start + 1
                 while (
-                    end < len(sorted_nodes)
-                    and sorted_nodes[start].on_false is sorted_nodes[end].on_false
+                    end < len(sorted_nodes) and sorted_nodes[end].on_false in conj_sinks
                 ):
                     end += 1
 
                 if end - start > 1:
-                    conj_expr = NodeConjunction([n for n in sorted_nodes[start:end]])
-                    conj_node = AbstractNode(conj_expr)
-                    conj_node.set_target(
-                        sorted_nodes[end - 1].on_true, sorted_nodes[start].on_false
+                    conj_expr = NodeConjunction(
+                        [n.expr for n in sorted_nodes[start:end]]
                     )
-                    conj_node.seize_origins(sorted_nodes[start])
+                    conj_node = AbstractNode(conj_expr)
+                    conj_node.set_target(sorted_nodes[end - 1].on_true, conj_sinks[-1])
+                    conj_node.seize_origins(conj_start)
                     for n in sorted_nodes[start:end]:
                         n.set_target(None, None)
                     sorted_nodes[start:end] = [conj_node]
@@ -320,20 +341,22 @@ class CodeExpressionAnalyzer:
                     break
 
                 # locate a span of abstract nodes that could form a single disjunction
+                disj_start = sorted_nodes[start]
+                disj_sinks = disj_start.on_true.get_unconditional_descendants()
+
                 end = start + 1
                 while (
-                    end < len(sorted_nodes)
-                    and sorted_nodes[start].on_true is sorted_nodes[end].on_true
+                    end < len(sorted_nodes) and sorted_nodes[end].on_true in disj_sinks
                 ):
                     end += 1
 
                 if end - start > 1:
-                    disj_expr = NodeDisjunction([n for n in sorted_nodes[start:end]])
-                    disj_node = AbstractNode(disj_expr)
-                    disj_node.set_target(
-                        sorted_nodes[start].on_true, sorted_nodes[end - 1].on_false
+                    disj_expr = NodeDisjunction(
+                        [n.expr for n in sorted_nodes[start:end]]
                     )
-                    disj_node.seize_origins(sorted_nodes[start])
+                    disj_node = AbstractNode(disj_expr)
+                    disj_node.set_target(disj_sinks[-1], sorted_nodes[end - 1].on_false)
+                    disj_node.seize_origins(disj_start)
                     for n in sorted_nodes[start:end]:
                         n.set_target(None, None)
                     sorted_nodes[start:end] = [disj_node]

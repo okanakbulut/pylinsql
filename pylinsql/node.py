@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from dis import Instruction
 from typing import Any, ClassVar, List, Optional
 
-from .ast import Conjunction, Disjunction, Expression, Stack
+from .ast import Conjunction, Disjunction, Expression, IfThenElse, Stack
 from .evaluator import Evaluator
 
 
@@ -20,9 +20,7 @@ class AbstractNode:
     "An abstract node in the control flow graph."
 
     # symbolic expression that constitutes the target condition
-    expr: Expression
-
-    inverted: bool = False
+    expr: NodeExpression
 
     # target node if condition evaluates to true (green edge)
     on_true: AbstractNode = None
@@ -36,7 +34,13 @@ class AbstractNode:
         self.origins = []
 
     def __repr__(self) -> str:
-        return f"{__class__.__name__}({self.expr}, {self.inverted})"
+        return f"{__class__.__name__}({repr(self.expr)})"
+
+    def __str__(self) -> str:
+        return str(self.expr)
+
+    def negate(self) -> None:
+        self.expr = self.expr.negate()
 
     def is_origin_consistent(self) -> bool:
         "Checks if all incoming edges are exclusively true (green) or exclusively false (red)."
@@ -54,21 +58,6 @@ class AbstractNode:
         "Returns all originating nodes whose false (red) edge is incoming to this node."
 
         return [origin for origin in self.origins if origin.on_false is self]
-
-    def get_roots(self) -> List[AbstractNode]:
-
-        result = []
-
-        def recursive_helper(node):
-            if not node.origins:
-                if node not in result:
-                    result.append(node)
-            else:
-                for origin in node.origins:
-                    recursive_helper(origin)
-
-        recursive_helper(self)
-        return result
 
     def remove_origins(self, nodes: Optional[List[AbstractNode]] = None) -> None:
         "Deletes all edges incoming to this node from a given set of nodes."
@@ -138,7 +127,7 @@ class AbstractNode:
     def twist(self) -> None:
         "Swaps true (green) and false (red) edges with each another."
 
-        self.inverted = not self.inverted
+        self.expr = self.expr.negate()
         self.on_false, self.on_true = self.on_true, self.on_false
 
     def topological_sort(self) -> List[AbstractNode]:
@@ -147,7 +136,7 @@ class AbstractNode:
         result = []
         seen = set()
 
-        def recursive_helper(node):
+        def recursive_helper(node: AbstractNode) -> None:
             if node.on_true is not None and node.on_true not in seen:
                 seen.add(node.on_true)
                 recursive_helper(node.on_true)
@@ -160,12 +149,36 @@ class AbstractNode:
         result.reverse()
         return result
 
+    def get_unconditional_descendants(self) -> List[AbstractNode]:
+        "Returns the set of nodes (including self) reachable from this node with unconditional jumps."
+
+        reachable = [self]
+        node = self
+        while node.on_true is node.on_false and node.on_true is not None:
+            node = node.on_true
+            reachable.append(node)
+        return reachable
+
+    def get_unconditional_ancestors(self) -> List[AbstractNode]:
+        "Returns the set of nodes (including self) that reach this node with unconditional jumps only."
+
+        result = []
+
+        def recursive_helper(node: AbstractNode) -> None:
+            result.append(node)
+            for origin in node.origins:
+                if origin.on_true is node and origin.on_false is node:
+                    recursive_helper(origin)
+
+        recursive_helper(self)
+        return result
+
     def traverse_top_down(self) -> List[AbstractNode]:
         "Produces a depth-first traversal of nodes starting from this node, choosing true (green) edges first."
 
         result = []
 
-        def recursive_helper(node):
+        def recursive_helper(node: AbstractNode) -> None:
             result.append(node)
             if node.on_true is not None and node.on_true not in result:
                 recursive_helper(node.on_true)
@@ -180,7 +193,7 @@ class AbstractNode:
 
         result = []
 
-        def recursive_helper(node):
+        def recursive_helper(node: AbstractNode) -> None:
             result.append(node)
             for origin in self.origins:
                 if origin not in result:
@@ -191,55 +204,105 @@ class AbstractNode:
 
 
 @dataclass(frozen=True)
-class NodeInstructions:
+class NodeExpression:
+    def negate(self) -> NodeExpression:
+        ...
+
+
+@dataclass(frozen=True)
+class NodeInstructions(NodeExpression):
     "Instructions encapsulated by a simple node."
 
     instructions: List[Instruction]
+    inverted: bool = False
 
     def __repr__(self) -> str:
+        return repr(self._get_label())
+
+    def __str__(self) -> str:
+        return self._get_label()
+
+    def _get_label(self) -> str:
+        if not self.instructions:
+            return "NOOP"
+
         addr = self.instructions[0].offset
         head = self.instructions[0].opname
         if len(self.instructions) > 1:
             last = self.instructions[-1].opname
-            return f"'{addr} {head}..{last}'"
+            instr = f"{head}..{last}"
         else:
-            return f"'{addr} {head}'"
+            instr = f"{head}"
+        label = f"{addr} {instr}"
+        if self.inverted:
+            return f"inv {label}"
+        else:
+            return label
+
+    def negate(self) -> NodeExpression:
+        return NodeInstructions(self.instructions, not self.inverted)
 
 
 @dataclass(frozen=True)
-class NodeBooleanExpression:
+class NodeListExpression(NodeExpression):
+    items: List[NodeExpression]
+
+
+@dataclass(frozen=True)
+class NodeBooleanExpression(NodeListExpression):
     "A Boolean expression that a composite node represents."
 
-    nodes: List[AbstractNode]
+    flag: ClassVar[bool] = None
 
     @classmethod
     def expression(cls, exprs: List[Expression]) -> Expression:
         ...
 
-    flag: ClassVar[bool] = None
-
 
 @dataclass(frozen=True)
 class NodeConjunction(NodeBooleanExpression):
+    flag: ClassVar[bool] = True
+
     @classmethod
     def expression(cls, exprs: List[Expression]) -> Expression:
         return Conjunction(exprs)
 
-    flag: ClassVar[bool] = True
+    def negate(self) -> NodeExpression:
+        return NodeDisjunction([item.negate() for item in self.items])
 
 
 @dataclass(frozen=True)
 class NodeDisjunction(NodeBooleanExpression):
+    flag: ClassVar[bool] = False
+
     @classmethod
     def expression(cls, exprs: List[Expression]) -> Expression:
         return Disjunction(exprs)
 
-    flag: ClassVar[bool] = False
+    def negate(self) -> NodeExpression:
+        return NodeConjunction([item.negate() for item in self.items])
 
 
 @dataclass(frozen=True)
-class NodeSequence:
-    nodes: List[AbstractNode]
+class NodeSequence(NodeListExpression):
+    @classmethod
+    def from_nodes(cls, nodes: List[AbstractNode]) -> NodeSequence:
+        return NodeSequence([node.expr for node in nodes])
+
+    def negate(self) -> NodeExpression:
+        return NodeSequence([item.negate() for item in self.items])
+
+
+@dataclass(frozen=True)
+class NodeIfThenElse(NodeExpression):
+    condition: NodeExpression
+    on_true: NodeExpression
+    on_false: NodeExpression
+
+    def negate(self) -> NodeExpression:
+        return NodeIfThenElse(
+            self.condition, self.on_false.negate(), self.on_true.negate()
+        )
 
 
 def print_nodes(nodes: List[AbstractNode]) -> None:
@@ -381,13 +444,11 @@ class NodeVisitor:
 
     def visit(self, node: AbstractNode, jump_cond: bool = True) -> Expression:
         expr = self._visit(node.expr, jump_cond)
-        if expr is not None and node.inverted:
-            return expr.negate()
-        else:
-            return expr
+        assert not self.stack
+        return expr
 
     @functools.singledispatchmethod
-    def _visit(self, expr: Any, jump_cond: bool) -> Expression:
+    def _visit(self, expr: NodeExpression, jump_cond: bool) -> Expression:
         raise NotImplementedError(f"unrecognized node expression type: {type(expr)}")
 
     @_visit.register
@@ -410,41 +471,38 @@ class NodeVisitor:
                     "multiple 'return' statements in an execution graph"
                 )
 
-        return result.jump_expr
+        expr = result.jump_expr
+        if expr is not None and block.inverted:
+            return expr.negate()
+        return expr
 
-    def _visit_boolean(self, boolean: NodeBooleanExpression) -> Expression:
-        exprs = [self.visit(node, boolean.flag) for node in boolean.nodes[:-1]]
+    def _visit_boolean(
+        self, boolean: NodeBooleanExpression, jump_cond: bool
+    ) -> Expression:
+        exprs = [self._visit(item, boolean.flag) for item in boolean.items[:-1]]
 
         # check last member of Boolean expression list to determine behavior
-        expr = self.visit(boolean.nodes[-1], not boolean.flag)
-        if expr is None:
-            # stand-alone Boolean expression is part of a compound expression
-            # e.g. expression is used as a function argument
-            # merge last value from top of the stack with list of expressions gathered so far
-            expr = self.stack.pop()
-            exprs.append(expr)
-            self.stack.append(boolean.expression(exprs))
-            return None
-        else:
-            # Boolean expression is part of a condition statement
-            # execution branches to true or false blocks based on its value
-            exprs.append(expr)
-            return boolean.expression(exprs)
+        expr = self._visit(boolean.items[-1], jump_cond)
+
+        # Boolean expression is part of a condition statement
+        # execution branches to true or false blocks based on its value
+        exprs.append(expr)
+        return boolean.expression(exprs)
 
     @_visit.register
-    def _(self, conj: NodeConjunction, _: bool) -> Expression:
-        return self._visit_boolean(conj)
+    def _(self, conj: NodeConjunction, jump_cond: bool) -> Expression:
+        return self._visit_boolean(conj, jump_cond)
 
     @_visit.register
-    def _(self, disj: NodeDisjunction, _: bool) -> Expression:
-        return self._visit_boolean(disj)
+    def _(self, disj: NodeDisjunction, jump_cond: bool) -> Expression:
+        return self._visit_boolean(disj, jump_cond)
 
     @_visit.register
     def _(self, seq: NodeSequence, jump_cond: bool) -> Expression:
         result = None
 
-        for node in seq.nodes:
-            expr = self.visit(node, jump_cond)
+        for item in seq.items:
+            expr = self._visit(item, jump_cond)
             if result is None:
                 result = expr
             elif expr is None:
@@ -455,3 +513,33 @@ class NodeVisitor:
                 )
 
         return result
+
+    @_visit.register
+    def _(self, branch: NodeIfThenElse, jump_cond: bool) -> Expression:
+        checkpoint = self.stack.copy()
+
+        # evaluate true (green) branch
+        self.stack = checkpoint.copy()
+        expr_condition_true = self._visit(branch.condition, True)
+        self._visit(branch.on_true, jump_cond)
+        expr_true = self.stack.pop()
+        stack_true = self.stack
+
+        # evaluate false (red) branch
+        self.stack = checkpoint.copy()
+        expr_condition_false = self._visit(branch.condition, False)
+        self._visit(branch.on_false, jump_cond)
+        expr_false = self.stack.pop()
+        stack_false = self.stack
+
+        # assemble compound expression, simplifying if possible
+        assert expr_condition_true == expr_condition_false
+        result = IfThenElse.create(expr_condition_true, expr_true, expr_false)
+        if jump_cond:
+            self.stack = stack_true
+        else:
+            self.stack = stack_false
+
+        # push compound expression to stack
+        self.stack.append(result)
+        return None

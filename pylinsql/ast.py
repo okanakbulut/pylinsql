@@ -350,3 +350,34 @@ class Disjunction(BooleanExpression):
 
     def __str__(self):
         return self.to_string("or")
+
+
+@dataclass(frozen=True)
+class IfThenElse(Expression):
+    precedence: ClassVar[int] = 0
+
+    condition: Expression
+    on_true: Expression
+    on_false: Expression
+
+    def negate(self) -> Expression:
+        return IfThenElse(self.condition, self.on_false.negate(), self.on_true.negate())
+
+    def __str__(self):
+        return f"{self.on_true} if {self.condition} else {self.on_false}"
+
+    @classmethod
+    def create(
+        cls, condition: Expression, on_true: Expression, on_false: Expression
+    ) -> Expression:
+        if condition == on_false:
+            result = Conjunction([on_false, on_true])
+        elif condition == on_true:
+            result = Disjunction([on_true, on_false])
+        elif condition.negate() == on_true:
+            result = Conjunction([on_true, on_false])
+        elif condition.negate() == on_false:
+            result = Disjunction([on_false, on_true])
+        else:
+            result = IfThenElse(condition, on_true, on_false)
+        return result
