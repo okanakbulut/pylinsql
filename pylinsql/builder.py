@@ -23,6 +23,7 @@ _conditional_aggregate_functions = Dispatcher(
     [avg_if, count_if, max_if, min_if, sum_if]
 )
 _datetime_functions = Dispatcher([year, month, day, hour, minute, second])
+_regexp_functions = Dispatcher([like, ilike, matches])
 _join_functions = Dispatcher([full_join, inner_join, left_join, right_join])
 _order_functions = Dispatcher([asc, desc])
 
@@ -502,6 +503,27 @@ class _QueryVisitor:
             return "CURRENT_TIMESTAMP"
 
         fn_name = call.get_function_name()
+
+        fn = _regexp_functions.get(call)
+        if fn:
+            text = self.visit(call.pargs[0])
+
+            if fn_name == like.__name__:
+                op = "LIKE"
+                pattern_string: str = self.visit(call.pargs[1])
+            elif fn_name == ilike.__name__:
+                op = "ILIKE"
+                pattern_string: str = self.visit(call.pargs[1])
+            elif fn_name == matches.__name__:
+                p: re.Pattern = self.visit(call.pargs[1])
+                if p.flags & re.IGNORECASE:
+                    op = "~*"
+                else:
+                    op = "~"
+                pattern_string: str = _to_sql_string(p.pattern)
+
+            return f"{text} {op} {pattern_string}"
+
         if fn_name == date.__name__:
             args = ", ".join([self.visit(arg) for arg in call.pargs])
             return f"MAKE_DATE({args})"
@@ -547,9 +569,16 @@ class _QueryVisitor:
     @_visit.register
     def _(self, arg: Constant) -> str:
         if isinstance(arg.value, str):
-            return "'" + arg.value.replace("'", "''") + "'"
+            return _to_sql_string(arg.value)
         else:
             return str(arg.value)
+
+
+def _to_sql_string(s: str) -> str:
+    "Converts a Python string object into a string that can be directly embedded in a SQL string."
+
+    escaped_string = s.replace("'", "''")
+    return f"'{escaped_string}'"
 
 
 @dataclass

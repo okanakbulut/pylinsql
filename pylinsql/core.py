@@ -3,6 +3,7 @@ Construct a SQL query from a Python expression.
 """
 
 import datetime
+import re
 from typing import Generic, List, Tuple, Type, Union, overload
 
 from .base import T, T1, T2, T3, T4, T5, T6, is_dataclass_type
@@ -153,6 +154,7 @@ def sum_if(expression: T, condition: bool) -> T:
 
 
 def now() -> datetime.datetime:
+    "Current date and time (timestamp)."
     ...
 
 
@@ -177,6 +179,21 @@ def minute(dt: Union[datetime.datetime, datetime.timedelta]) -> int:
 
 
 def second(dt: Union[datetime.datetime, datetime.timedelta]) -> int:
+    ...
+
+
+def like(text: str, pattern: str) -> bool:
+    "Case-sensitive pattern matching with the LIKE operator."
+    ...
+
+
+def ilike(text: str, pattern: str) -> bool:
+    "Case-insensitive pattern matching with the ILIKE operator."
+    ...
+
+
+def matches(text: str, pattern: re.Pattern) -> bool:
+    "Case-sensitive or case-insensitive pattern matching with regular expressions."
     ...
 
 

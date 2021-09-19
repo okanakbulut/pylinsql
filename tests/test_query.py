@@ -1,3 +1,4 @@
+import re
 import unittest
 from datetime import date
 from typing import Generator
@@ -12,8 +13,11 @@ from pylinsql.core import (
     day,
     desc,
     entity,
+    ilike,
     inner_join,
     left_join,
+    like,
+    matches,
     max_if,
     min_if,
     month,
@@ -231,6 +235,25 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
         self.assertQueryIs(
             select(p for p in entity(Person) if year(now() - p.birth_date) >= 18),
             """SELECT * FROM "Person" AS p WHERE EXTRACT(YEAR FROM (CURRENT_TIMESTAMP - p.birth_date)) >= 18""",
+        )
+
+    def test_where_like(self):
+        self.assertQueryIs(
+            select(p for p in entity(Person) if like(p.family_name, r"%rica_")),
+            r"""SELECT * FROM "Person" AS p WHERE p.family_name LIKE '%rica_'""",
+        )
+
+    def test_where_ilike(self):
+        self.assertQueryIs(
+            select(p for p in entity(Person) if ilike(p.family_name, r"%RICA_")),
+            r"""SELECT * FROM "Person" AS p WHERE p.family_name ILIKE '%RICA_'""",
+        )
+
+    def test_where_matches(self):
+        pattern = re.compile(r"can$", re.IGNORECASE)
+        self.assertQueryIs(
+            select(p for p in entity(Person) if matches(p.family_name, pattern)),
+            """SELECT * FROM "Person" AS p WHERE p.family_name ~* 'can$'""",
         )
 
     def test_case_when_then_else(self):
