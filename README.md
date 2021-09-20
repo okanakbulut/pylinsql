@@ -1,6 +1,6 @@
 # Language-Integrated SQL Queries in Python
 
-The purpose of this package is to help write SQL queries in Python that integrate with the type checker and produce standard SQL query strings as an end result. The main idea is to take a Python generator expression such as
+*pylinsql* helps you write SQL queries in Python that integrate with the type checker and produce standard SQL query strings as an end result. The main idea is to take a Python generator expression such as
 ```python
 select(
     asc(p.given_name)
@@ -25,9 +25,9 @@ Using a language-integrated query formalism (analogous to LINQ in C#), users can
 
 ## Objectives
 
-The inspiration for *pylinsql* has been to employ efficient asynchronous communication with the database engine (such as in *asyncpg*) while providing a type-safe means to formulate SELECT and INSERT queries (as in PonyORM).
+The inspiration for *pylinsql* has been to employ efficient asynchronous communication with the database engine (such as in *asyncpg*) while providing a type-safe means to formulate SELECT and INSERT queries (as in *PonyORM*).
 
-This work is no substitute for an all-in-one boxed solution that handles database connections, performs pooling, caching, manages entity relationships, etc. (such as SQLAlchemy). Its purpose is to help write a SQL query in the style of C# language-integrated queries that you can then execute with a(n asynchronous) SQL engine client (e.g. *asyncpg* in Python).
+This work is no substitute for an all-in-one boxed solution that handles database connections, performs pooling, caching, manages entity relationships, etc. (such as *SQLAlchemy*). Its purpose is to help write a SQL query in the style of C# language-integrated queries that you can then execute with a(n asynchronous) SQL engine client (e.g. *asyncpg* in Python).
 
 
 ## Usage
@@ -97,6 +97,122 @@ GROUP BY a.city
 HAVING MIN(p.birth_date) >= MAKE_DATE(1989, 10, 23)
 ```
 
+### Join expressions
+
+*pylinsql* supports (inner) join, left join, right join and full (outer) join via the Python functions `inner_join`, `left_join`, `right_join` and `full_join`. These go into condition part of the generator expression. They take two parameters, both of which must be table attribute references, e.g. `p.perm_address_id` or `a1.id`:
+```python
+select(
+    p
+    for p, a1, a2 in entity(Person, Address, Address)
+    if inner_join(p.perm_address_id, a1.id)
+    and left_join(p.temp_address_id, a2.id)
+    and ((a1.city != "London") or (a2.city != "Zürich"))
+)
+```
+
+If two tables are listed as entities but not referenced by a join in the condition part, they are assumed to expand to a cross product, as in SQL.
+
+### Select expressions
+
+In addition to a scalar expression (single column per row) and a tuple expression (for multiple columns per row), *pylinsql* offers a convenience syntax with a `@dataclass` annotated type acting as the output.
+
+Assume that you have a custom `@dataclass` type called `PersonCity`:
+```python
+@dataclass
+class PersonCity:
+    family_name: str
+    given_name: str
+    city: str
+```
+
+When executed against a database engine, the following query will produce a list of `PersonCity` instances:
+
+```python
+select(
+    PersonCity(p.family_name, p.given_name, a.city)
+    for p, a in entity(Person, Address)
+    if inner_join(p.perm_address_id, a.id)
+)
+```
+
+Positional and keyword arguments in the `@dataclass` initializer are both supported.
+
+### Sort order
+
+If you specify the sort order of a column with special Python functions `asc(column)` and `desc(column)`, *pylinsql* will append the appropriate `ORDER BY` clause at the end of the SQL query:
+
+```python
+select(
+    (asc(p.family_name), desc(p.given_name), p.birth_date)
+    for p in entity(Person)
+)
+```
+```sql
+SELECT p.family_name, p.given_name, p.birth_date
+FROM "Person" AS p
+ORDER BY p.family_name ASC, p.given_name DESC
+```
+
+### Aggregation functions
+
+Several aggregation functions are available, including `avg`, `count`, `max`, `min`, `sum`, `avg_if`, `count_if`, `max_if`, `min_if` and `sum_if`.
+
+The following example illustrates how to use simple aggregation functions:
+```python
+select(
+    (count(p.birth_date), min(p.birth_date), max(p.birth_date))
+    for p in entity(Person)
+)
+```
+
+Conditional aggregation functions take a Boolean filter expression as a second parameter:
+```python
+select(
+    (
+        count_if(p.birth_date, p.given_name != "John")
+    )
+    for p in entity(Person)
+)
+```
+```sql
+SELECT COUNT(p.birth_date) FILTER (WHERE p.given_name <> 'John')
+FROM "Person" AS p
+```
+
+### Date and time
+
+A date constructed with `datetime.date(y, m, d)` in Python is translated to `MAKE_DATE(y, m, d)` in PostgreSQL. Likewise, `datetime.time(h, m, s)` is translated to `MAKE_TIME(h, m, s)`. Parts of a date or time can be extracted with functions like `year(dt)` or `hour(dt)`, which map to the appropriate `EXTRACT` clause in SQL. Date and time differences are also supported.
+
+```python
+select(p for p in entity(Person) if year(now() - p.birth_date) >= 18)
+```
+```sql
+SELECT * FROM "Person" AS p WHERE EXTRACT(YEAR FROM (CURRENT_TIMESTAMP - p.birth_date)) >= 18
+```
+
+### String matching
+
+String matching with the SQL-standard LIKE operator and PostgreSQL's regular expression match operators `~` (case sensitive) and `~*` (case insensitive match) are both supported, use Python functions `like`, `ilike`, `match` and `imatch`. The following example matches all people records whose family name ends in `can` (with a case sensitive match):
+
+```python
+select(p for p in entity(Person) if matches(p.family_name, r"can$"))
+```
+```sql
+SELECT * FROM "Person" AS p WHERE p.family_name ~ 'can$'
+```
+
+### Executing a query
+
+The package `async_database` contains functions to create a database connection, acquire a connection from a connection pool, and run queries in a transaction. Member functions of the class `DatabaseConnection` accept Python generator expressions the same way that `select` does in the examples above.
+
+```python
+async with async_database.connection() as conn:
+    results = await conn.select(p for p in entity(Person))
+
+    result = await conn.select_first(p for p in entity(Person))
+```
+
+
 ## Code generator for data classes
 
 *pylinsql* depends on Python data classes for its language-integrated query mechanism. For example, in order to execute
@@ -124,8 +240,8 @@ class Person:
     family_name: str
     given_name: str
     birth_date: datetime
-    perm_address_id: int = field(...)
-    temp_address_id: Optional[int] = field(...)
+    perm_address_id: int = field(default=...)
+    temp_address_id: Optional[int] = field(default=...)
 ```
 
 Defining these classes manually would be tedious work. Fortunately, *pylinsql* comes with a code generator utility that scans table schema definitions in a database, and writes corresponding Python code:
@@ -165,7 +281,7 @@ and Semantics-Preserving Transformations](https://www.ndss-symposium.org/wp-cont
 
 As an example, let's consider the following Python generator expression:
 ```python
-(p.family_name, p.given_name) for p in entity(Person) if p.given_name == "John" and p.family_name != "Doe"
+((p.family_name, p.given_name) for p in entity(Person) if p.given_name == "John" and p.family_name != "Doe")
 ```
 This has a _conditional part_:
 ```python
