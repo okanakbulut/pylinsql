@@ -144,12 +144,31 @@ class FunctionCall(NegateableExpression):
         "True if this function expression can be used to invoke the given signature."
 
         name = self.get_function_name()
-        if name:
-            return name == fn.__name__ and len(self.pargs) + len(self.kwargs) == len(
-                inspect.signature(fn).parameters
-            )
-        else:
+        if name is None:
             return False
+
+        if name != fn.__name__:
+            return False
+
+        sig = inspect.signature(fn)
+        try:
+            sig.bind(*self.pargs, **self.kwargs)
+        except TypeError:
+            return False
+
+        return True
+
+    def bind_args(self, fn: Callable) -> inspect.BoundArguments:
+        "Maps positional and keyword arguments of this function expression to named arguments of a callable."
+
+        name = self.get_function_name()
+        if name is None or name != fn.__name__:
+            raise TypeError("incompatible callable type signature")
+
+        sig = inspect.signature(fn)
+        ba = sig.bind(*self.pargs, **self.kwargs)
+        ba.apply_defaults()
+        return ba
 
     def __str__(self):
         args = ", ".join(
@@ -161,25 +180,36 @@ class FunctionCall(NegateableExpression):
         return f"{self.base}({args})"
 
 
+@dataclass
+class BoundSignature:
+    callable: Callable
+    args: inspect.BoundArguments
+
+    @property
+    def name(self):
+        return self.callable.__name__
+
+    def __getitem__(self, key):
+        return self.args.arguments[key]
+
+
 class Dispatcher:
     function_mapping: Dict[str, Callable]
 
     def __init__(self, functions: List[Callable]):
         self.function_mapping = {fn.__name__: fn for fn in functions}
 
-    def _get(self, name: str) -> Optional[Callable]:
-        return self.function_mapping.get(name, None)
-
-    def get(self, call: FunctionCall) -> Optional[Callable]:
+    def get(self, call: FunctionCall) -> Optional[BoundSignature]:
         name = call.get_function_name()
-        if not name:
+        if name is None:
             return None
 
-        fn = self._get(name)
+        fn = self.function_mapping.get(name, None)
         if not fn or not call.is_dispatchable(fn):
             return None
 
-        return fn
+        ba = call.bind_args(fn)
+        return BoundSignature(fn, ba)
 
 
 @dataclass(frozen=True)

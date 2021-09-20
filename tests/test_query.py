@@ -14,6 +14,7 @@ from pylinsql.core import (
     desc,
     entity,
     ilike,
+    imatches,
     inner_join,
     left_join,
     like,
@@ -250,10 +251,25 @@ class TestLanguageIntegratedSQL(unittest.TestCase):
         )
 
     def test_where_matches(self):
-        pattern = re.compile(r"can$", re.IGNORECASE)
         self.assertQueryIs(
-            select(p for p in entity(Person) if matches(p.family_name, pattern)),
-            """SELECT * FROM "Person" AS p WHERE p.family_name ~* 'can$'""",
+            select(p for p in entity(Person) if matches(p.family_name, r"can$")),
+            """SELECT * FROM "Person" AS p WHERE p.family_name ~ 'can$'""",
+        )
+
+    def test_where_imatches(self):
+        self.assertQueryIs(
+            select(p for p in entity(Person) if imatches(p.family_name, r"CAN$")),
+            """SELECT * FROM "Person" AS p WHERE p.family_name ~* 'CAN$'""",
+        )
+
+    def test_where_matches_named_args(self):
+        self.assertQueryIs(
+            select(
+                p
+                for p in entity(Person)
+                if matches(pattern=r"can$", text=p.family_name)
+            ),
+            """SELECT * FROM "Person" AS p WHERE p.family_name ~ 'can$'""",
         )
 
     def test_case_when_then_else(self):

@@ -36,7 +36,7 @@ def _analyze_expression(code_object: CodeType) -> CodeExpression:
     code_analyzer = CodeExpressionAnalyzer(code_object)
     try:
         return code_analyzer.get_expression()
-    except AttributeError as e:
+    except Exception as e:
         path = code_object.co_filename
         lineno = code_object.co_firstlineno
         raise RuntimeError(

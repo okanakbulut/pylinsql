@@ -93,37 +93,37 @@ def right_join(left: T, right: T) -> bool:
     ...
 
 
-def asc(_: T) -> T:
+def asc(column: T) -> T:
     "Order items in ascending order."
     ...
 
 
-def desc(_: T) -> T:
+def desc(column: T) -> T:
     "Order items in descending order."
     ...
 
 
-def avg(_: T) -> T:
+def avg(expression: T) -> T:
     "Aggregation function: Mean of items in set."
     ...
 
 
-def count(_: T) -> int:
+def count(expression: T) -> int:
     "Aggregation function: Number of items in set."
     ...
 
 
-def max(_: T) -> T:
+def max(expression: T) -> T:
     "Aggregation function: Greatest item in set."
     ...
 
 
-def min(_: T) -> T:
+def min(expression: T) -> T:
     "Aggregation function: Smallest item in set."
     ...
 
 
-def sum(_: T) -> T:
+def sum(expression: T) -> T:
     "Aggregation function: Sum of items in set."
     ...
 
@@ -192,8 +192,13 @@ def ilike(text: str, pattern: str) -> bool:
     ...
 
 
-def matches(text: str, pattern: re.Pattern) -> bool:
-    "Case-sensitive or case-insensitive pattern matching with regular expressions."
+def matches(text: str, pattern: str) -> bool:
+    "Case-sensitive pattern matching with regular expressions."
+    ...
+
+
+def imatches(text: str, pattern: str) -> bool:
+    "Case-insensitive pattern matching with regular expressions."
     ...
 
 

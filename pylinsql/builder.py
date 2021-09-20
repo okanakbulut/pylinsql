@@ -23,7 +23,7 @@ _conditional_aggregate_functions = Dispatcher(
     [avg_if, count_if, max_if, min_if, sum_if]
 )
 _datetime_functions = Dispatcher([year, month, day, hour, minute, second])
-_regexp_functions = Dispatcher([like, ilike, matches])
+_matching_functions = Dispatcher([like, ilike, matches, imatches])
 _join_functions = Dispatcher([full_join, inner_join, left_join, right_join])
 _order_functions = Dispatcher([asc, desc])
 
@@ -151,9 +151,9 @@ class _JoinExtractor:
 
     @visit.register
     def _(self, call: FunctionCall) -> Optional[FunctionCall]:
-        fn = _join_functions.get(call)
-        if fn:
-            return self._join_expr(_JoinType(fn.__name__), call.pargs[0], call.pargs[1])
+        sig = _join_functions.get(call)
+        if sig:
+            return self._join_expr(_JoinType(sig.name), sig["left"], sig["right"])
 
         return call
 
@@ -225,24 +225,24 @@ class _ConditionContextClassifier:
 
     @_visit.register
     def _(self, call: FunctionCall) -> None:
-        fn = _aggregate_functions.get(call)
-        if fn:
-            return self._visit_aggregation_func(fn, call)
+        sig = _aggregate_functions.get(call)
+        if sig:
+            return self._visit_aggregation_func(sig, call)
 
-        fn = _conditional_aggregate_functions.get(call)
-        if fn:
-            return self._visit_aggregation_func(fn, call)
+        sig = _conditional_aggregate_functions.get(call)
+        if sig:
+            return self._visit_aggregation_func(sig, call)
 
-        fn = _join_functions.get(call)
-        if fn:
+        sig = _join_functions.get(call)
+        if sig:
             raise QueryTypeError(
-                f"join function {fn.__name__} can only be used at the top-level in the conditional part (following 'if') of the Python generator expression"
+                f"join function {sig.name} can only be used at the top-level in the conditional part (following 'if') of the Python generator expression"
             )
 
-        fn = _order_functions.get(call)
-        if fn:
+        sig = _order_functions.get(call)
+        if sig:
             raise QueryTypeError(
-                f"order function {fn.__name__} can only be used as a top-level wrapper in the target expression part (preceding 'for') of the Python generator expression"
+                f"order function {sig.name} can only be used as a top-level wrapper in the target expression part (preceding 'for') of the Python generator expression"
             )
 
         # process regular functions
@@ -252,14 +252,14 @@ class _ConditionContextClassifier:
         for _, arg in call.kwargs.items():
             self._visit(arg)
 
-    def _visit_aggregation_func(self, fn: Callable, call: FunctionCall) -> None:
+    def _visit_aggregation_func(self, sig: BoundSignature, call: FunctionCall) -> None:
         if self._context is _ConditionContext.UNDECIDED:
             self._context = _ConditionContext.HAVING
 
         if self._context is _ConditionContext.HAVING:
             if self._inside_aggregation:
                 raise QueryTypeError(
-                    f"cannot nest aggregation function {fn.__name__} inside another"
+                    f"cannot nest aggregation function {sig.name} inside another"
                 )
 
             self._visit(call.base)
@@ -272,7 +272,7 @@ class _ConditionContextClassifier:
 
         elif self._context is _ConditionContext.WHERE:
             raise QueryTypeError(
-                f"cannot use aggregation function {fn.__name__} in a non-aggregation context"
+                f"cannot use aggregation function {sig.name} in a non-aggregation context"
             )
 
     @_visit.register
@@ -478,52 +478,80 @@ class _QueryVisitor:
 
         raise TypeError(f"illegal comparison: {comp}")
 
+    def _sql_func_args(self, sig: BoundSignature) -> Dict[str, Any]:
+        "SQL arguments for a function call."
+
+        sql_args: Dict[str, Any] = {}
+
+        # iterate over function parameters in definition order
+        for parameter in sig.args.signature.parameters.values():
+            if parameter.kind in [
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.KEYWORD_ONLY,
+                inspect.Parameter.VAR_KEYWORD,
+            ]:
+                raise TypeError(
+                    "keyword-only and variable arguments are not supported in SQL"
+                )
+
+            sql_arg = self.visit(sig.args.arguments[parameter.name])
+            sql_args[parameter.name] = sql_arg
+
+        return sql_args
+
+    def _sql_func_call(self, sig: BoundSignature, name: str = None) -> str:
+        "SQL expression for a function call."
+
+        if name is None:
+            name = sig.name
+        sql_arglist = ", ".join(self._sql_func_args(sig).values())
+        return f"{name}({sql_arglist})"
+
     @_visit.register
     def _(self, call: FunctionCall) -> str:
-        fn = _aggregate_functions.get(call)
-        if fn:
-            args = ", ".join([self.visit(arg) for arg in call.pargs])
-            func = call.base.name.upper()
-            return f"{func}({args})"
+        sig = _aggregate_functions.get(call)
+        if sig:
+            return self._sql_func_call(sig, name=sig.name.upper())
 
-        fn = _conditional_aggregate_functions.get(call)
-        if fn:
+        sig = _conditional_aggregate_functions.get(call)
+        if sig:
             self.stack.append(TopLevelExpression())
-            expr, cond = [self.visit(arg) for arg in call.pargs]
+            sql_args = self._sql_func_args(sig)
             self.stack.pop()
-            func = call.base.name.replace("_if", "").upper()
+            func = sig.name.replace("_if", "").upper()
+            expr = sql_args["expression"]
+            cond = sql_args["condition"]
             return f"{func}({expr}) FILTER (WHERE {cond})"
 
-        fn = _datetime_functions.get(call)
-        if fn:
-            arg = self.visit(call.pargs[0])
-            return f"EXTRACT({call.base.name.upper()} FROM {arg})"
+        sig = _datetime_functions.get(call)
+        if sig:
+            sql_args = self._sql_func_args(sig)
+            func = sig.name.upper()
+            dt = sql_args["dt"]
+            return f"EXTRACT({func} FROM {dt})"
 
         if call.is_dispatchable(now):
             return "CURRENT_TIMESTAMP"
 
-        fn_name = call.get_function_name()
+        sig = _matching_functions.get(call)
+        if sig:
+            sql_args = self._sql_func_args(sig)
 
-        fn = _regexp_functions.get(call)
-        if fn:
-            text = self.visit(call.pargs[0])
-
-            if fn_name == like.__name__:
+            if sig.name == like.__name__:
                 op = "LIKE"
-                pattern_string: str = self.visit(call.pargs[1])
-            elif fn_name == ilike.__name__:
+            elif sig.name == ilike.__name__:
                 op = "ILIKE"
-                pattern_string: str = self.visit(call.pargs[1])
-            elif fn_name == matches.__name__:
-                p: re.Pattern = self.visit(call.pargs[1])
-                if p.flags & re.IGNORECASE:
-                    op = "~*"
-                else:
-                    op = "~"
-                pattern_string: str = _to_sql_string(p.pattern)
+            elif sig.name == matches.__name__:
+                op = "~"
+            elif sig.name == imatches.__name__:
+                op = "~*"
 
-            return f"{text} {op} {pattern_string}"
+            text = sql_args["text"]
+            pattern = sql_args["pattern"]
+            return f"{text} {op} {pattern}"
 
+        # special treatment for built-in functions
+        fn_name = call.get_function_name()
         if fn_name == date.__name__:
             args = ", ".join([self.visit(arg) for arg in call.pargs])
             return f"MAKE_DATE({args})"
@@ -544,8 +572,7 @@ class _QueryVisitor:
         value = self.closure_vars[arg.name]
         if isinstance(value, Query):
             return f"({value.sql})"
-        else:
-            return value
+        raise TypeError(f"unexpected reference to closure variable: {arg.name}")
 
     @_visit.register
     def _(self, arg: GlobalRef) -> str:
@@ -629,10 +656,10 @@ class _SelectExtractor:
 
     @_visit.register
     def _(self, call: FunctionCall) -> None:
-        fn = _order_functions.get(call)
-        if fn:
+        sig = _order_functions.get(call)
+        if sig:
             item = self._visit_expr(call.pargs[0])
-            order = _OrderType(fn.__name__).value.upper()
+            order = _OrderType(sig.name).value.upper()
             self.order_by.append(f"{item} {order}")
             return
 
