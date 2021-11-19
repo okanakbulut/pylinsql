@@ -45,7 +45,7 @@ def unwrap_optional_type(typ: Type[Optional[T]]) -> Type[T]:
     # will automatically unwrap Union[T] into T
     return Union[
         tuple(filter(lambda item: item is not type(None), typing.get_args(typ)))
-    ]
+    ]  # type: ignore
 
 
 def cast_if_not_none(typ: Type[T], value: Optional[Any]) -> Optional[T]:

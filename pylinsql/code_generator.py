@@ -9,46 +9,11 @@ from typing import Any, Dict, List, Optional, TextIO, Tuple, TypeVar
 
 from . import async_database
 from .async_database import ConnectionParameters, DatabaseClient
+from .conversion import python_type_to_str, sql_to_python_type
 from .base import DataClass, cast_if_not_none, is_optional_type, unwrap_optional_type
 from .schema import ForeignKey, PrimaryKey, Reference
 
 T = TypeVar("T")
-
-
-def _db_type_to_py_type(
-    db_type: str, is_nullable: bool, has_default: bool
-) -> Tuple[type, type]:
-    "Maps a PostgreSQL type to a Python type."
-
-    if db_type in ["character varying", "text"]:
-        py_type = str
-    elif db_type in ["boolean"]:
-        py_type = bool
-    elif db_type in ["smallint", "integer", "bigint"]:
-        py_type = int
-    elif db_type in ["real", "double precision"]:
-        py_type = float
-    elif db_type in ["date"]:
-        py_type = datetime.date
-    elif db_type in ["time", "time with time zone", "time without time zone"]:
-        py_type = datetime.time
-    elif db_type in [
-        "timestamp",
-        "timestamp with time zone",
-        "timestamp without time zone",
-    ]:
-        py_type = datetime.datetime
-    else:
-        raise RuntimeError(f"unrecognized database type: {db_type}")
-
-    if is_nullable and not has_default:
-        outer_type = Optional[py_type]
-        value_type = py_type
-    else:
-        outer_type = py_type
-        value_type = py_type
-
-    return outer_type, value_type
 
 
 @dataclass
@@ -257,11 +222,12 @@ class _CatalogSchemaBuilder:
         columns = await self.conn.raw_fetch(query, self.db_schema, db_table)
         column_schemas = {}
         for column in columns:
-            outer_type, value_type = _db_type_to_py_type(
-                column["data_type"],
-                column["is_nullable"],
-                column["column_default"] is not None,
-            )
+            value_type = sql_to_python_type(column["data_type"])
+
+            if column["is_nullable"] and column["column_default"] is not None:
+                outer_type = Optional[value_type]
+            else:
+                outer_type = value_type
 
             column_schema = ColumnSchema(
                 name=column["column_name"],
@@ -429,7 +395,9 @@ def dataclasses_to_stream(types: List[DataClass], target: TextIO):
     print("from dataclasses import dataclass, field", file=target)
     print("from datetime import date, datetime, time", file=target)
     print("from typing import Optional", file=target)
+    print(file=target)
     print("from pylinsql.schema import *", file=target)
+    print("from pylinsql.types import *", file=target)
     print(file=target)
 
     for typ in types:
@@ -447,11 +415,7 @@ def dataclasses_to_stream(types: List[DataClass], target: TextIO):
 
         # table columns
         for field in dataclasses.fields(typ):
-            if is_optional_type(field.type):
-                inner_type = unwrap_optional_type(field.type)
-                type_name = f"Optional[{inner_type.__name__}]"
-            else:
-                type_name = field.type.__name__
+            type_name = python_type_to_str(field.type)
             if field.default is not MISSING and field.metadata:
                 initializer = f" = field(default = {repr(field.default)}, metadata = {repr(dict(field.metadata))})"
             elif field.metadata:

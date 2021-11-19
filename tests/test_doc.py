@@ -11,7 +11,7 @@ from typing import Optional
 from pylinsql.core import *
 from pylinsql.query import *
 
-from .database import Address, Person, PersonCity
+from tests.database import Address, Person, PersonCity
 
 # global variables necessary for eval(...) to properly find entities for examples
 a = Address(id=1, city="Budapest")
