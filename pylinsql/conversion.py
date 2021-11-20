@@ -7,7 +7,7 @@ from typing import List
 
 from typing_extensions import Annotated
 
-from .types import MaxLength, Precision, Storage, int64, int32, int16
+from .auxiliary_types import MaxLength, Precision, Storage, int64, int32, int16
 
 
 def sql_to_python_type(sql_type: str) -> type:

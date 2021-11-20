@@ -1,16 +1,17 @@
 import asyncio
 import dataclasses
-import datetime
 import io
 import keyword
 import sys
+import textwrap
 from dataclasses import MISSING, Field, dataclass
+from io import StringIO
 from typing import Any, Dict, List, Optional, TextIO, Tuple, TypeVar
 
 from . import async_database
 from .async_database import ConnectionParameters, DatabaseClient
 from .conversion import python_type_to_str, sql_to_python_type
-from .base import DataClass, cast_if_not_none, is_optional_type, unwrap_optional_type
+from .base import DataClass, cast_if_not_none, is_optional_type
 from .schema import ForeignKey, PrimaryKey, Reference
 
 T = TypeVar("T")
@@ -375,8 +376,24 @@ def table_to_dataclass(table: TableSchema) -> DataClass:
     # default arguments must follow non-default arguments
     fields.sort(key=lambda f: f[2].default is not MISSING)
 
+    # produce class definition with docstring
     typ = dataclasses.make_dataclass(class_name, fields)
-    typ.__doc__ = table.description
+    with StringIO() as out:
+        for field in dataclasses.fields(typ):
+            description = field.metadata.get("description")
+            if description is not None:
+                print(f":param {field.name}: {description}", file=out)
+        paramstring = out.getvalue()
+    with StringIO() as out:
+        if table.description:
+            out.write(table.description)
+        if table.description and paramstring:
+            out.write("\n\n")
+        if paramstring:
+            out.write(paramstring)
+        docstring = out.getvalue()
+    typ.__doc__ = docstring
+
     if table.primary_key is not None:
         typ.primary_key = table.primary_key
     return typ
@@ -396,8 +413,8 @@ def dataclasses_to_stream(types: List[DataClass], target: TextIO):
     print("from datetime import date, datetime, time", file=target)
     print("from typing import Optional", file=target)
     print(file=target)
+    print("from pylinsql.auxiliary_types import *", file=target)
     print("from pylinsql.schema import *", file=target)
-    print("from pylinsql.types import *", file=target)
     print(file=target)
 
     for typ in types:
@@ -405,7 +422,12 @@ def dataclasses_to_stream(types: List[DataClass], target: TextIO):
         print("@dataclass", file=target)
         print(f"class {typ.__name__}:", file=target)
         if typ.__doc__:
-            print(f"    {repr(typ.__doc__)}", file=target)
+            if "\n" in typ.__doc__:
+                print('    """', file=target)
+                target.write(textwrap.indent(typ.__doc__, "    "))
+                print('    """', file=target)
+            else:
+                print(f"    {repr(typ.__doc__)}", file=target)
             print(file=target)
 
         # primary key
@@ -416,10 +438,12 @@ def dataclasses_to_stream(types: List[DataClass], target: TextIO):
         # table columns
         for field in dataclasses.fields(typ):
             type_name = python_type_to_str(field.type)
-            if field.default is not MISSING and field.metadata:
-                initializer = f" = field(default = {repr(field.default)}, metadata = {repr(dict(field.metadata))})"
-            elif field.metadata:
-                initializer = f" = field(metadata = {repr(dict(field.metadata))})"
+            metadata = dict(field.metadata)
+            metadata.pop("description", None)
+            if field.default is not MISSING and metadata:
+                initializer = f" = field(default = {repr(field.default)}, metadata = {repr(metadata)})"
+            elif metadata:
+                initializer = f" = field(metadata = {repr(metadata)})"
             elif field.default is not MISSING:
                 initializer = f" = {repr(field.default)}"
             else:
