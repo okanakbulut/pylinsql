@@ -1,8 +1,15 @@
 import unittest
 from decimal import Decimal
 
-from pylinsql.conversion import python_type_to_str, sql_to_python_type
-from pylinsql.auxiliary_types import MaxLength, Precision, int16, int32, int64
+from pylinsql.conversion import sql_to_python_type
+from strong_typing.auxiliary import (
+    MaxLength,
+    Precision,
+    int16,
+    int32,
+    int64,
+    python_type_to_str,
+)
 from typing_extensions import Annotated
 
 

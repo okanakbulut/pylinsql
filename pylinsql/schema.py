@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Union
 
-from .auxiliary_types import CompactDataClass
+from strong_typing.auxiliary import CompactDataClass
 
 
 @dataclass(frozen=True, repr=False)

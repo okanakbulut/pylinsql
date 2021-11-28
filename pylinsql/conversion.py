@@ -1,13 +1,18 @@
 import datetime
 import decimal
 import re
-import typing
 import uuid
 from typing import List
 
-from typing_extensions import Annotated
-
-from .auxiliary_types import MaxLength, Precision, Storage, int64, int32, int16
+from strong_typing.auxiliary import (
+    Annotated,
+    MaxLength,
+    Precision,
+    Storage,
+    int64,
+    int32,
+    int16,
+)
 
 
 def sql_to_python_type(sql_type: str) -> type:
@@ -69,47 +74,3 @@ def sql_to_python_type(sql_type: str) -> type:
         return Annotated[datetime.datetime, Precision(precision)]
 
     raise NotImplementedError(f"unrecognized database type: {sql_type}")
-
-
-def _python_type_to_str(data_type: type) -> str:
-    "Returns the string representation of a Python type without metadata."
-
-    origin = typing.get_origin(data_type)
-    if origin is not None:
-        args = ", ".join(python_type_to_str(t) for t in typing.get_args(data_type))
-
-        if origin is dict:  # Dict[T]
-            origin_name = "Dict"
-        elif origin is list:  # List[T]
-            origin_name = "List"
-        elif origin is set:  # Set[T]
-            origin_name = "Set"
-        else:
-            origin_name = origin.__name__
-
-        return f"{origin_name}[{args}]"
-
-    return data_type.__name__
-
-
-def python_type_to_str(data_type: type) -> str:
-    "Returns the string representation of a Python type."
-
-    # use compact name for alias types
-    if data_type is int16:
-        return "int16"
-    if data_type is int32:
-        return "int32"
-    if data_type is int64:
-        return "int64"
-
-    metadata = getattr(data_type, "__metadata__", None)
-    if metadata is not None:
-        # type is Annotation[T, ...]
-        arg = typing.get_args(data_type)[0]
-        s = _python_type_to_str(arg)
-        args = ", ".join(repr(m) for m in metadata)
-        return f"Annotated[{s}, {args}]"
-    else:
-        # type is a regular type
-        return _python_type_to_str(data_type)
