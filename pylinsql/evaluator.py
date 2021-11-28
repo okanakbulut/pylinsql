@@ -4,7 +4,9 @@ Builds a symbolic expression by evaluating low-level instructions.
 This module is used internally.
 """
 
+import builtins
 import dis
+import sys
 from dataclasses import dataclass
 from dis import Instruction
 from types import CodeType
@@ -14,46 +16,67 @@ from .ast import *
 
 
 class JumpResolver:
+    # each instruction is 2 bytes
+    INST_SIZE: ClassVar[int] = 2
+
     _next: int
 
     def process(self, instr: dis.Instruction) -> Tuple[int, int]:
-        self._next = instr.offset + 2  # automatically fall through to subsequent block
-        fn = getattr(self, instr.opname, None)
+        # automatically fall through to subsequent block
+        self._next = instr.offset + __class__.INST_SIZE
 
+        fn = getattr(self, instr.opname, None)
         if fn is not None:
             return fn(instr.arg)
+        elif self.test(instr):
+            raise NotImplementedError(
+                f"jump instruction {instr.opname} is not recognized"
+            )
         else:
             return self._next, self._next
 
     def test(self, instr: dis.Instruction) -> bool:
         "True if the Python instruction involves a jump with a target, e.g. JUMP_ABSOLUTE or POP_JUMP_IF_TRUE."
 
-        return getattr(self, instr.opname, None) is not None
+        return instr.opcode in dis.hasjabs or instr.opcode in dis.hasjrel
 
     def JUMP_ABSOLUTE(self, target):
-        return target, target
+        addr = self._abs(target)
+        return addr, addr
 
     def JUMP_FORWARD(self, delta):
-        target = self._next + delta
-        return target, target
+        addr = self._rel(delta)
+        return addr, addr
 
     def JUMP_IF_FALSE_OR_POP(self, target):
-        return self._next, target
+        return self._next, self._abs(target)
 
     def JUMP_IF_TRUE_OR_POP(self, target):
-        return target, self._next
+        return self._abs(target), self._next
 
     def POP_JUMP_IF_FALSE(self, target):
-        return self._next, target
+        return self._next, self._abs(target)
 
     def POP_JUMP_IF_TRUE(self, target):
-        return target, self._next
+        return self._abs(target), self._next
 
     def FOR_ITER(self, delta):
-        return self._next, self._next + delta
+        return self._next, self._rel(delta)
 
     def RETURN_VALUE(self, _):
         return None, None
+
+    def _abs(self, target):
+        if sys.version_info >= (3, 10):
+            return __class__.INST_SIZE * target
+        else:
+            return target
+
+    def _rel(self, delta):
+        if sys.version_info >= (3, 10):
+            return self._next + __class__.INST_SIZE * delta
+        else:
+            return self._next + delta
 
 
 @dataclass(frozen=True)
@@ -204,6 +227,13 @@ class Evaluator:
     # new in version 3.9
     CONTAINS_OP = lambda self, invert: self._compare_op("in", invert)
     IS_OP = lambda self, invert: self._compare_op("is", invert)
+
+    # new in version 3.10
+    def GEN_START(self, kind):
+        pass
+
+    def GET_LEN(self, _):
+        self.stack.append(FunctionCall(builtins.len, [self.stack[-1]]))
 
     def JUMP_ABSOLUTE(self, target):
         pass

@@ -1,4 +1,3 @@
-import re
 import unittest
 from datetime import date
 from typing import Generator

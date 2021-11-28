@@ -106,7 +106,8 @@ def python_type_to_str(data_type: type) -> str:
     metadata = getattr(data_type, "__metadata__", None)
     if metadata is not None:
         # type is Annotation[T, ...]
-        s = _python_type_to_str(typing.get_origin(data_type))
+        arg = typing.get_args(data_type)[0]
+        s = _python_type_to_str(arg)
         args = ", ".join(repr(m) for m in metadata)
         return f"Annotated[{s}, {args}]"
     else:

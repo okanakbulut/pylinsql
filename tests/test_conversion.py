@@ -2,7 +2,7 @@ import unittest
 from decimal import Decimal
 
 from pylinsql.conversion import python_type_to_str, sql_to_python_type
-from pylinsql.types import MaxLength, Precision, int16, int32, int64
+from pylinsql.auxiliary_types import MaxLength, Precision, int16, int32, int64
 from typing_extensions import Annotated
 
 

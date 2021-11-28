@@ -412,6 +412,7 @@ def dataclasses_to_stream(types: List[DataClass], target: TextIO):
     print("from dataclasses import dataclass, field", file=target)
     print("from datetime import date, datetime, time", file=target)
     print("from typing import Optional", file=target)
+    print("from uuid import UUID", file=target)
     print(file=target)
     print("from pylinsql.auxiliary_types import *", file=target)
     print("from pylinsql.schema import *", file=target)
