@@ -205,7 +205,7 @@ class _CatalogSchemaBuilder:
                     WHEN is_nullable = 'NO' THEN FALSE
                     ELSE NULL
                 END AS is_nullable,
-                data_type,
+                udt_name::regtype AS data_type,
                 column_default,
                 character_maximum_length,
                 CASE
@@ -225,17 +225,29 @@ class _CatalogSchemaBuilder:
         columns = await self.conn.raw_fetch(query, self.db_schema, db_table)
         column_schemas = {}
         for column in columns:
-            value_type = sql_to_python_type(column["data_type"])
+            column_type = column["data_type"]
+            try:
+                value_type = sql_to_python_type(column_type)
+            except NotImplementedError:
+                raise NotImplementedError(
+                    f"unrecognized database column type {column_type} in table {db_table}"
+                )
 
             if column["is_nullable"] and column["column_default"] is not None:
                 outer_type = Optional[value_type]
             else:
                 outer_type = value_type
 
+            try:
+                default = cast_if_not_none(value_type, column["column_default"])
+            except:
+                # a field may have an expression default value such as nextval(...)
+                default = None
+
             column_schema = ColumnSchema(
                 name=column["column_name"],
                 data_type=outer_type,
-                default=cast_if_not_none(value_type, column["column_default"]),
+                default=default,
                 description=column["description"],
             )
             column_schemas[column_schema.name] = column_schema
