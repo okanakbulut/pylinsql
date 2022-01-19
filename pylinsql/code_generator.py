@@ -83,80 +83,91 @@ class _CatalogSchemaBuilder:
 
         # query table names in dependency order
         query = """
-            WITH RECURSIVE dependencies(
-                    depth,
-                    parent_catalog,
-                    parent_schema,
-                    parent_name,
-                    child_catalog,
-                    child_schema,
-                    child_name
-            ) AS (
-                -- tables that have no foreign keys
-                SELECT
-                    1 AS depth,
-                    pkey.table_catalog,
-                    pkey.table_schema,
-                    pkey.table_name,
-                    tab.table_catalog,
-                    tab.table_schema,
-                    tab.table_name
-                FROM
-                    information_schema.referential_constraints AS ref_con
-                        INNER JOIN information_schema.key_column_usage AS pkey ON
-                            ref_con.unique_constraint_catalog = pkey.constraint_catalog AND
-                            ref_con.unique_constraint_schema = pkey.constraint_schema AND
-                            ref_con.unique_constraint_name = pkey.constraint_name
-                        INNER JOIN information_schema.key_column_usage AS fkey ON
-                            ref_con.constraint_catalog = fkey.constraint_catalog AND
-                            ref_con.constraint_schema = fkey.constraint_schema AND
-                            ref_con.constraint_name = fkey.constraint_name
-                        RIGHT JOIN information_schema.tables AS tab ON
-                            tab.table_catalog = fkey.table_catalog AND
-                            tab.table_schema = fkey.table_schema AND
-                            tab.table_name = fkey.table_name
-                WHERE
-                    tab.table_catalog = CURRENT_CATALOG AND
-                    tab.table_schema = $1 AND
-                    pkey.table_catalog IS NULL AND
-                    pkey.table_schema IS NULL AND
-                    pkey.table_name IS NULL
-            UNION ALL
-                -- tables that only depend on tables returned by the previous recursion steps
-                SELECT
-                    dep.depth + 1,
-                    dep.child_catalog,
-                    dep.child_schema,
-                    dep.child_name,
-                    tab.table_catalog,
-                    tab.table_schema,
-                    tab.table_name
-                FROM
-                    information_schema.referential_constraints AS ref_con
-                        INNER JOIN information_schema.key_column_usage AS pkey ON
-                            ref_con.unique_constraint_catalog = pkey.constraint_catalog AND
-                            ref_con.unique_constraint_schema = pkey.constraint_schema AND
-                            ref_con.unique_constraint_name = pkey.constraint_name
-                        INNER JOIN information_schema.key_column_usage AS fkey ON
-                            ref_con.constraint_catalog = fkey.constraint_catalog AND
-                            ref_con.constraint_schema = fkey.constraint_schema AND
-                            ref_con.constraint_name = fkey.constraint_name
-                        INNER JOIN information_schema.tables AS tab ON
-                            tab.table_catalog = fkey.table_catalog AND
-                            tab.table_schema = fkey.table_schema AND
-                            tab.table_name = fkey.table_name
-                        INNER JOIN dependencies AS dep ON
-                            dep.child_catalog = pkey.table_catalog AND
-                            dep.child_schema = pkey.table_schema AND
-                            dep.child_name = pkey.table_name
-                WHERE
-                    tab.table_catalog = CURRENT_CATALOG AND
-                    tab.table_schema = $1
-            )
+            WITH RECURSIVE
+                key_reference AS (
+                    SELECT
+                        rcon.unique_constraint_catalog AS primary_constraint_catalog,
+                        rcon.unique_constraint_schema AS primary_constraint_schema,
+                        rcon.unique_constraint_name AS primary_constraint_name,
+                        pkey.table_catalog AS primary_table_catalog,
+                        pkey.table_schema AS primary_table_schema,
+                        pkey.table_name AS primary_table_name,
+                        rcon.constraint_catalog AS foreign_constraint_catalog,
+                        rcon.constraint_schema AS foreign_constraint_schema,
+                        rcon.constraint_name AS foreign_constraint_name,
+                        fkey.table_catalog AS foreign_table_catalog,
+                        fkey.table_schema AS foreign_table_schema,
+                        fkey.table_name AS foreign_table_name
+                    
+                    FROM
+                        information_schema.referential_constraints AS rcon
+                            INNER JOIN information_schema.key_column_usage AS pkey ON
+                                rcon.unique_constraint_catalog = pkey.constraint_catalog AND
+                                rcon.unique_constraint_schema = pkey.constraint_schema AND
+                                rcon.unique_constraint_name = pkey.constraint_name
+                            INNER JOIN information_schema.key_column_usage AS fkey ON
+                                rcon.constraint_catalog = fkey.constraint_catalog AND
+                                rcon.constraint_schema = fkey.constraint_schema AND
+                                rcon.constraint_name = fkey.constraint_name
+                ),
+                dependencies(
+                        depth,
+                        parent_catalog,
+                        parent_schema,
+                        parent_name,
+                        child_catalog,
+                        child_schema,
+                        child_name
+                ) AS (
+                    -- tables that have no foreign keys
+                    SELECT
+                        1 AS depth,
+                        NULL::information_schema.sql_identifier,
+                        NULL::information_schema.sql_identifier,
+                        NULL::information_schema.sql_identifier,
+                        tab.table_catalog,
+                        tab.table_schema,
+                        tab.table_name
+                    FROM (
+                        (
+                            SELECT
+                                table_catalog, table_schema, table_name
+                            FROM
+                                information_schema.tables
+                            WHERE
+                                table_type = 'BASE TABLE' AND
+                                table_catalog = CURRENT_CATALOG AND
+                                table_schema = $1
+                        )
+                        EXCEPT
+                        (
+                            SELECT
+                                foreign_table_catalog, foreign_table_schema, foreign_table_name
+                            FROM
+                                key_reference
+                        )
+                    ) AS tab
+                UNION
+                    -- tables that only depend on tables returned by the previous recursion steps
+                    SELECT
+                        dep.depth + 1,
+                        kref.primary_table_catalog,
+                        kref.primary_table_schema,
+                        kref.primary_table_name,
+                        kref.foreign_table_catalog,
+                        kref.foreign_table_schema,
+                        kref.foreign_table_name
+                    FROM
+                        key_reference AS kref
+                            INNER JOIN dependencies AS dep ON
+                                dep.child_catalog = kref.primary_table_catalog AND
+                                dep.child_schema = kref.primary_table_schema AND
+                                dep.child_name = kref.primary_table_name
+                )
             SELECT
                 child_name
             FROM
-                dependencies
+                (SELECT * FROM dependencies LIMIT 2000) AS dep
             GROUP BY
                 child_name
             ORDER BY
