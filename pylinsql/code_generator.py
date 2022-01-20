@@ -81,35 +81,41 @@ class _CatalogSchemaBuilder:
     async def get_catalog_schema(self) -> CatalogSchema:
         "Retrieves metadata for the current catalog."
 
+        query = """
+            CREATE TEMPORARY TABLE key_reference AS (
+                SELECT
+                    rcon.unique_constraint_catalog AS primary_constraint_catalog,
+                    rcon.unique_constraint_schema AS primary_constraint_schema,
+                    rcon.unique_constraint_name AS primary_constraint_name,
+                    pkey.table_catalog AS primary_table_catalog,
+                    pkey.table_schema AS primary_table_schema,
+                    pkey.table_name AS primary_table_name,
+                    pkey.column_name AS primary_column_name,
+                    rcon.constraint_catalog AS foreign_constraint_catalog,
+                    rcon.constraint_schema AS foreign_constraint_schema,
+                    rcon.constraint_name AS foreign_constraint_name,
+                    fkey.table_catalog AS foreign_table_catalog,
+                    fkey.table_schema AS foreign_table_schema,
+                    fkey.table_name AS foreign_table_name,
+                    fkey.column_name AS foreign_column_name
+
+                FROM
+                    information_schema.referential_constraints AS rcon
+                        INNER JOIN information_schema.key_column_usage AS pkey ON
+                            rcon.unique_constraint_catalog = pkey.constraint_catalog AND
+                            rcon.unique_constraint_schema = pkey.constraint_schema AND
+                            rcon.unique_constraint_name = pkey.constraint_name
+                        INNER JOIN information_schema.key_column_usage AS fkey ON
+                            rcon.constraint_catalog = fkey.constraint_catalog AND
+                            rcon.constraint_schema = fkey.constraint_schema AND
+                            rcon.constraint_name = fkey.constraint_name
+            );        
+        """
+        await self.conn.raw_execute(query)
+
         # query table names in dependency order
         query = """
             WITH RECURSIVE
-                key_reference AS (
-                    SELECT
-                        rcon.unique_constraint_catalog AS primary_constraint_catalog,
-                        rcon.unique_constraint_schema AS primary_constraint_schema,
-                        rcon.unique_constraint_name AS primary_constraint_name,
-                        pkey.table_catalog AS primary_table_catalog,
-                        pkey.table_schema AS primary_table_schema,
-                        pkey.table_name AS primary_table_name,
-                        rcon.constraint_catalog AS foreign_constraint_catalog,
-                        rcon.constraint_schema AS foreign_constraint_schema,
-                        rcon.constraint_name AS foreign_constraint_name,
-                        fkey.table_catalog AS foreign_table_catalog,
-                        fkey.table_schema AS foreign_table_schema,
-                        fkey.table_name AS foreign_table_name
-                    
-                    FROM
-                        information_schema.referential_constraints AS rcon
-                            INNER JOIN information_schema.key_column_usage AS pkey ON
-                                rcon.unique_constraint_catalog = pkey.constraint_catalog AND
-                                rcon.unique_constraint_schema = pkey.constraint_schema AND
-                                rcon.unique_constraint_name = pkey.constraint_name
-                            INNER JOIN information_schema.key_column_usage AS fkey ON
-                                rcon.constraint_catalog = fkey.constraint_catalog AND
-                                rcon.constraint_schema = fkey.constraint_schema AND
-                                rcon.constraint_name = fkey.constraint_name
-                ),
                 dependencies(
                         depth,
                         parent_catalog,
@@ -310,28 +316,20 @@ class _CatalogSchemaBuilder:
 
         query = """
             SELECT
-                fkey.constraint_name AS foreign_key_name,
-                fkey.table_schema AS foreign_key_schema,
-                fkey.table_name AS foreign_key_table,
-                fkey.column_name AS foreign_key_column,
-                pkey.constraint_name AS primary_key_name,
-                pkey.table_schema AS primary_key_schema,
-                pkey.table_name AS primary_key_table,
-                pkey.column_name AS primary_key_column
+                foreign_constraint_name AS foreign_key_name,
+                foreign_table_schema AS foreign_key_schema,
+                foreign_table_name AS foreign_key_table,
+                foreign_column_name AS foreign_key_column,
+                primary_constraint_name AS primary_key_name,
+                primary_table_schema AS primary_key_schema,
+                primary_table_name AS primary_key_table,
+                primary_column_name AS primary_key_column
             FROM
-                information_schema.referential_constraints ref_con
-                    INNER JOIN information_schema.key_column_usage pkey ON
-                        ref_con.unique_constraint_catalog = pkey.constraint_catalog AND
-                        ref_con.unique_constraint_schema = pkey.constraint_schema AND
-                        ref_con.unique_constraint_name = pkey.constraint_name
-                    INNER JOIN information_schema.key_column_usage fkey ON
-                        ref_con.constraint_catalog = fkey.constraint_catalog AND
-                        ref_con.constraint_schema = fkey.constraint_schema AND
-                        ref_con.constraint_name = fkey.constraint_name
+                key_reference
             WHERE
-                fkey.table_catalog = CURRENT_CATALOG
-                    AND fkey.table_schema = $1
-                    AND fkey.table_name = $2
+                foreign_table_catalog = CURRENT_CATALOG
+                    AND foreign_table_schema = $1
+                    AND foreign_table_name = $2
         """
         constraints = await self.conn.typed_fetch(
             _ReferenceConstraint, query, self.db_schema, table_schema.name

@@ -37,6 +37,8 @@ def sql_to_python_type(sql_type: str) -> type:
         return Annotated[float, Storage(8)]
     if sql_type in ["character varying", "text"]:
         return str
+    if sql_type in ["decimal", "numeric"]:
+        return decimal.Decimal
     if sql_type == "date":
         return datetime.date
     if sql_type in ["time", "time with time zone", "time without time zone"]:
@@ -47,7 +49,7 @@ def sql_to_python_type(sql_type: str) -> type:
         "timestamp without time zone",
     ]:
         return datetime.datetime
-    if sql_type == "jsonb":
+    if sql_type in ["json", "jsonb"]:
         return str
     if sql_type == "uuid":
         return uuid.UUID

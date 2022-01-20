@@ -6,6 +6,7 @@ from pylinsql.code_generator import (
     dataclasses_to_code,
     get_catalog_schema,
 )
+from pylinsql.timing import timing
 
 from tests.database_test_case import DatabaseTestCase
 
@@ -17,6 +18,7 @@ class TestCodeGenerator(DatabaseTestCase):
     def assertNotEmpty(self, obj):
         self.assertTrue(obj)
 
+    @timing
     async def test_generator(self):
         async with connection(self.params) as conn:
             catalog = await get_catalog_schema(conn, "public")
