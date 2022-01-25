@@ -109,7 +109,7 @@ class _CatalogSchemaBuilder:
                             rcon.constraint_catalog = fkey.constraint_catalog AND
                             rcon.constraint_schema = fkey.constraint_schema AND
                             rcon.constraint_name = fkey.constraint_name
-            );        
+            );
         """
         await self.conn.raw_execute(query)
 
@@ -125,7 +125,7 @@ class _CatalogSchemaBuilder:
                         child_schema,
                         child_name
                 ) AS (
-                    -- tables that have no foreign keys
+                    -- tables that have no foreign keys to other tables
                     SELECT
                         1 AS depth,
                         NULL::information_schema.sql_identifier,
@@ -136,6 +136,7 @@ class _CatalogSchemaBuilder:
                         tab.table_name
                     FROM (
                         (
+                            -- all tables (but not views)
                             SELECT
                                 table_catalog, table_schema, table_name
                             FROM
@@ -147,10 +148,16 @@ class _CatalogSchemaBuilder:
                         )
                         EXCEPT
                         (
+                            -- tables with foreign keys (excluding self-references)
                             SELECT
                                 foreign_table_catalog, foreign_table_schema, foreign_table_name
                             FROM
                                 key_reference
+                            WHERE
+                                -- exclude self-references (such as "users" table referencing "users" table)
+                                primary_table_catalog != foreign_table_catalog OR
+                                primary_table_schema != foreign_table_schema OR
+                                primary_table_name != foreign_table_name
                         )
                     ) AS tab
                 UNION
@@ -250,7 +257,7 @@ class _CatalogSchemaBuilder:
                     f"unrecognized database column type {column_type} in table {db_table}"
                 )
 
-            if column["is_nullable"] and column["column_default"] is not None:
+            if column["is_nullable"] and column["column_default"] is None:
                 outer_type = Optional[value_type]
             else:
                 outer_type = value_type

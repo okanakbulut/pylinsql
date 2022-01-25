@@ -43,6 +43,8 @@ def sql_to_python_type(sql_type: str) -> type:
         return datetime.date
     if sql_type in ["time", "time with time zone", "time without time zone"]:
         return datetime.time
+    if sql_type == "interval":
+        return datetime.timedelta
     if sql_type in [
         "timestamp",
         "timestamp with time zone",
