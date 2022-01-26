@@ -26,3 +26,12 @@ class ForeignKey(CompactDataClass):
 
     name: str
     references: Reference
+
+
+@dataclass(frozen=True, repr=False)
+class DiscriminatedKey(CompactDataClass):
+    "Declares a discriminated union of foreign keys in a table."
+
+    name: str
+    discriminator: str
+    references: List[Reference]

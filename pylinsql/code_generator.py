@@ -370,7 +370,7 @@ async def get_catalog_schema(conn: DatabaseClient, db_schema: str) -> CatalogSch
 
 
 def column_to_field(
-    column: ColumnSchema,
+    column: ColumnSchema, optional_default: bool = True
 ) -> Tuple[str, type, Field]:
     if keyword.iskeyword(column.name):
         field_name = f"{column.name}_"  # PEP 8: single trailing underscore to avoid conflicts with Python keyword
@@ -386,7 +386,7 @@ def column_to_field(
     default = MISSING
     if column.default is not None:
         default = column.default
-    elif is_optional_type(column.data_type):
+    elif optional_default and is_optional_type(column.data_type):
         default = None
 
     return (
@@ -396,10 +396,17 @@ def column_to_field(
     )
 
 
-def table_to_dataclass(table: TableSchema) -> DataClass:
-    "Generates a dataclass type corresponding to a table schema."
+def table_to_dataclass(table: TableSchema, optional_default: bool = True) -> DataClass:
+    """
+    Generates a dataclass type corresponding to a table schema.
 
-    fields = [column_to_field(column) for column in table.columns.values()]
+    :param table: The database table from which to produce a dataclass.
+    :param optional_default: Whether to assign a default value of `None` to fields with type `Optional[T]`.
+    """
+
+    fields = [
+        column_to_field(column, optional_default) for column in table.columns.values()
+    ]
     if keyword.iskeyword(table.name):
         class_name = f"{table.name}_"  # PEP 8: single trailing underscore to avoid conflicts with Python keyword
     else:
@@ -524,6 +531,7 @@ def enum_class_to_stream(enum_class: enum.Enum, target: TextIO) -> None:
     print(f"class {enum_class.__name__}(enum.Enum):", file=target)
     if enum_class.__doc__:
         print(f"    {repr(enum_class.__doc__)}", file=target)
+        print(file=target)
 
     for e in enum_class:
         value = repr(e.value)
