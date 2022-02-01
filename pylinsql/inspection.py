@@ -13,14 +13,19 @@ def entity_classes(module: types.ModuleType) -> Dict[str, Type]:
         raise TypeError(f"expected Python module but got: {module}")
 
     # skip types that are not data or enumeration classes and types imported from other modules
-    return {
-        cls.__name__: cls
+    classes = [
+        cls
         for _, cls in inspect.getmembers(
             module,
             lambda cls: (dataclasses.is_dataclass(cls) or is_type_enum(cls))
             and cls.__module__ == module.__name__,
         )
-    }
+    ]
+
+    # keep definition order
+    classes.sort(key=lambda cls: inspect.findsource(cls)[1])
+
+    return {cls.__name__: cls for cls in classes}
 
 
 class _KeyValidator:

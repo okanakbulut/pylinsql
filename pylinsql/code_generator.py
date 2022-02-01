@@ -1,8 +1,10 @@
 import asyncio
 import dataclasses
 import enum
+import inspect
 import io
 import keyword
+import re
 import sys
 import textwrap
 from dataclasses import MISSING, Field, dataclass
@@ -464,18 +466,41 @@ def dataclass_to_stream(typ: DataClass, target: TextIO) -> None:
     print(file=target)
     print("@dataclass", file=target)
     print(f"class {typ.__name__}:", file=target)
-    if typ.__doc__:
+
+    # check if class has a doc-string other than the auto-generated string assigned by @dataclass
+    if typ.__doc__ and not re.match(
+        f"^{re.escape(typ.__name__)}[(].*[)]$", typ.__doc__
+    ):
         if "\n" in typ.__doc__:
             print('    """', file=target)
-            target.write(textwrap.indent(typ.__doc__, "    "))
+            for line in textwrap.dedent(typ.__doc__).lstrip().splitlines():
+                if not line:
+                    # keep empty lines
+                    print(file=target)
+                else:
+                    # wrap long lines
+                    for wrapline in textwrap.wrap(
+                        line,
+                        width=119,
+                        initial_indent="    ",
+                        subsequent_indent="    ",
+                    ):
+                        print(wrapline, file=target)
             print('    """', file=target)
         else:
             print(f"    {repr(typ.__doc__)}", file=target)
         print(file=target)
 
-    # primary key
-    if getattr(typ, "primary_key", None) is not None:
-        print(f"    primary_key = {repr(typ.primary_key)}", file=target)
+    # class variables (e.g. "primary_key")
+    field_names = [field.name for field in dataclasses.fields(typ)]
+    variables = {
+        name: value
+        for name, value in inspect.getmembers(typ, lambda m: not inspect.isroutine(m))
+        if not re.match(r"^__.+__$", name) and name not in field_names
+    }
+    if variables:
+        for name, value in variables.items():
+            print(f"    {name} = {repr(value)}", file=target)
         print(file=target)
 
     # table columns
