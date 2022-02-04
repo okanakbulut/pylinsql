@@ -1,11 +1,36 @@
 import dataclasses
 import inspect
+import linecache
+import re
 import types
 from typing import Dict, List, Type
 
 from strong_typing.inspection import is_dataclass_type, is_type_enum
 
 from .schema import DiscriminatedKey, ForeignKey, Reference
+
+
+def classes_in_module_source_file(module: types.ModuleType) -> Dict[str, int]:
+    "Retrieve a dictionary of key/value pairs mapping class names in a module to source code line numbers."
+
+    file = inspect.getsourcefile(module)
+    if file:
+        # invalidate cache if needed
+        linecache.checkcache(file)
+    else:
+        file = inspect.getfile(module)
+
+    lines = linecache.getlines(file, module.__dict__)
+    if not lines:
+        raise OSError("could not get source code")
+
+    result: Dict[str, int] = {}
+    for lineno, line in enumerate(lines, start=1):
+        m = re.match(r"^class ([A-Za-z_][A-Za-z0-9_]*)", line)
+        if m:
+            result[m.group(1)] = lineno
+
+    return result
 
 
 def entity_classes(module: types.ModuleType) -> Dict[str, Type]:
@@ -22,8 +47,9 @@ def entity_classes(module: types.ModuleType) -> Dict[str, Type]:
         )
     ]
 
-    # keep definition order
-    classes.sort(key=lambda cls: inspect.findsource(cls)[1])
+    # keep the order of classes as they are defined in the source file
+    class_lineno = classes_in_module_source_file(module)
+    classes.sort(key=lambda cls: class_lineno.get(cls.__name__, 0))
 
     return {cls.__name__: cls for cls in classes}
 
