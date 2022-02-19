@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import pylinsql.async_database as async_database
 from pylinsql.async_database import DataAccess
-from pylinsql.core import DEFAULT, count, entity, inner_join
+from pylinsql.query.core import DEFAULT, count, entity, inner_join
 
 from tests.database import Address, Person, PersonCity
 from tests.database_test_case import DatabaseTestCase

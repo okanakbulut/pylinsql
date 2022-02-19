@@ -1,7 +1,7 @@
 import unittest
 from decimal import Decimal
 
-from pylinsql.conversion import sql_to_python_type
+from pylinsql.generator.conversion import sql_to_python_type
 from strong_typing.auxiliary import (
     MaxLength,
     Precision,

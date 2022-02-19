@@ -3,7 +3,6 @@ Construct a SQL query from a Python expression.
 """
 
 import datetime
-import re
 from typing import Generic, List, Tuple, Type, Union, overload
 
 from .base import T, T1, T2, T3, T4, T5, T6, is_dataclass_type

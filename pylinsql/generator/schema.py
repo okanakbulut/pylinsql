@@ -1,3 +1,7 @@
+"""
+Metadata attached to fields in a data class definition.
+"""
+
 from dataclasses import dataclass
 from typing import List, Union
 

@@ -58,23 +58,26 @@ class _KeyValidator:
     entities: Dict[str, Type]
     field_names: Dict[str, List[str]]
 
-    def __init__(self, module: types.ModuleType) -> None:
+    def __init__(self, module: types.ModuleType, verbose: bool = True) -> None:
         self.entities = entity_classes(module)
         self.field_names = {
             class_name: [f.name for f in dataclasses.fields(class_type)]
             for class_name, class_type in self.entities.items()
             if dataclasses.is_dataclass(class_type)
         }
+        self.verbose = verbose
 
     def _validate_reference(self, key_name: str, reference: Reference) -> bool:
         if reference.table not in self.entities:
-            print(f"{key_name} references non-existent table `{reference.table}`")
+            if self.verbose:
+                print(f"{key_name} references non-existent table `{reference.table}`")
             return False
 
         if reference.column not in self.field_names[reference.table]:
-            print(
-                f"{key_name} references non-existent field `{reference.column}` in `{reference.table}`"
-            )
+            if self.verbose:
+                print(
+                    f"{key_name} references non-existent field `{reference.column}` in `{reference.table}`"
+                )
             return False
 
         return True
@@ -109,4 +112,6 @@ class _KeyValidator:
 
 
 def validate(module: types.ModuleType) -> bool:
+    "Validates a module generated from a PostgreSQL schema for correctness and consistency."
+
     return _KeyValidator(module).validate()

@@ -2,7 +2,7 @@ import datetime
 import decimal
 import re
 import uuid
-from typing import List
+from typing import Any, List, Optional, Type, TypeVar
 
 from strong_typing.auxiliary import (
     Annotated,
@@ -13,6 +13,17 @@ from strong_typing.auxiliary import (
     int32,
     int16,
 )
+
+T = TypeVar("T")
+
+
+def cast_if_not_none(typ: Type[T], value: Optional[Any]) -> Optional[T]:
+    "Coerces an optional value into the specified type unless the value is None."
+
+    if value is None:
+        return None
+    else:
+        return typ(value)
 
 
 def sql_to_python_type(sql_type: str) -> type:

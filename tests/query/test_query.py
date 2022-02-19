@@ -2,7 +2,7 @@ import unittest
 from datetime import date
 from typing import Generator
 
-from pylinsql.core import (
+from pylinsql.query.core import (
     Query,
     QueryTypeError,
     asc,
@@ -25,7 +25,7 @@ from pylinsql.core import (
     p_1,
     year,
 )
-from pylinsql.query import cache_info, insert_or_select, select
+from pylinsql.query.query import cache_info, insert_or_select, select
 
 from tests.database import Address, Person, PersonCity, PersonCountryCity
 

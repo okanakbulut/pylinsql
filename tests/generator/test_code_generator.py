@@ -2,13 +2,12 @@ import importlib
 import unittest
 
 from pylinsql.async_database import connection
-from pylinsql.code_generator import (
+from pylinsql.generator.code_generator import (
     catalog_to_dataclasses,
     dataclasses_to_code,
     get_catalog_schema,
 )
-from pylinsql.inspection import entity_classes
-
+from pylinsql.generator.inspection import entity_classes, validate
 from tests.database_test_case import DatabaseTestCase
 
 
@@ -38,14 +37,9 @@ class TestCodeGenerator(DatabaseTestCase):
         module = importlib.import_module("test_example")
         entity_names = entity_classes(module).keys()
         type_names = [t.__name__ for t in types]
+        self.assertCountEqual(type_names, entity_names)
 
-        # check if all entity class types occur in the generated file
-        for type_name in type_names:
-            self.assertIn(type_name, entity_names)
-
-        # check if all class definitions in the generated file correspond to entities
-        for entity_name in entity_names:
-            self.assertIn(entity_name, type_names)
+        validate(module)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ from __future__ import annotations
 import functools
 from dataclasses import dataclass
 from dis import Instruction
-from typing import Any, ClassVar, List, Optional
+from typing import ClassVar, List, Optional
 
 from .ast import Conjunction, Disjunction, Expression, IfThenElse, Stack
 from .evaluator import Evaluator

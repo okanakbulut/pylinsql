@@ -11,16 +11,30 @@ from dataclasses import MISSING, Field, dataclass
 from io import StringIO
 from typing import Any, Dict, List, Optional, TextIO, Tuple, TypeVar
 
-from strong_typing.auxiliary import python_type_to_str
-from strong_typing.inspection import is_type_enum, is_dataclass_type
+try:
+    from typing import Protocol
+except ImportError:
+    from typing_extensions import Protocol
 
-from . import async_database
-from .async_database import ConnectionParameters, DatabaseClient
-from .base import DataClass, cast_if_not_none, is_optional_type
-from .conversion import sql_to_python_type
+from strong_typing.auxiliary import python_type_to_str
+from strong_typing.inspection import is_dataclass_type, is_type_enum, is_type_optional
+
+from ..connection.async_database import (
+    BasicConnection,
+    ConnectionParameters,
+    connection,
+)
+from . import schema
+from .conversion import cast_if_not_none, sql_to_python_type
 from .schema import ForeignKey, PrimaryKey, Reference
 
 T = TypeVar("T")
+
+
+class DataClass(Protocol[T]):
+    "Identifies a type as a dataclass type."
+
+    __dataclass_fields__: Dict
 
 
 @dataclass
@@ -75,10 +89,10 @@ class _ReferenceConstraint:
 
 
 class _CatalogSchemaBuilder:
-    conn: DatabaseClient
+    conn: BasicConnection
     db_schema: str
 
-    def __init__(self, conn: DatabaseClient, db_schema: str):
+    def __init__(self, conn: BasicConnection, db_schema: str):
         self.conn = conn
         self.db_schema = db_schema
 
@@ -366,7 +380,7 @@ class _CatalogSchemaBuilder:
             )
 
 
-async def get_catalog_schema(conn: DatabaseClient, db_schema: str) -> CatalogSchema:
+async def get_catalog_schema(conn: BasicConnection, db_schema: str) -> CatalogSchema:
     builder = _CatalogSchemaBuilder(conn, db_schema)
     return await builder.get_catalog_schema()
 
@@ -388,7 +402,7 @@ def column_to_field(
     default = MISSING
     if column.default is not None:
         default = column.default
-    elif optional_default and is_optional_type(column.data_type):
+    elif optional_default and is_type_optional(column.data_type):
         default = None
 
     return (
@@ -455,7 +469,7 @@ def _header_to_stream(target: TextIO) -> None:
     print("from typing import Optional", file=target)
     print("from uuid import UUID", file=target)
     print(file=target)
-    print("from pylinsql.schema import *", file=target)
+    print(f"from {schema.__name__} import *", file=target)
     print("from strong_typing.auxiliary import *", file=target)
     print(file=target)
 
@@ -623,7 +637,7 @@ def classes_to_stream(types: List[DataClass], target: TextIO) -> None:
 
 
 async def main(output_path: str, db_schema: str) -> None:
-    async with async_database.connection(ConnectionParameters()) as conn:
+    async with connection(ConnectionParameters()) as conn:
         catalog = await get_catalog_schema(conn, db_schema)
 
     if not catalog:

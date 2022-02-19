@@ -8,8 +8,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 # star import necessary for eval(...) to properly find symbols in documentation
-from pylinsql.core import *
-from pylinsql.query import *
+from pylinsql.query.core import *
+from pylinsql.query.query import *
 
 from tests.database import Address, Person, PersonCity
 

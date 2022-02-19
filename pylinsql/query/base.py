@@ -1,3 +1,7 @@
+"""
+Fundamental generic types and type inspection.
+"""
+
 import dataclasses
 import typing
 from typing import (

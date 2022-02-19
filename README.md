@@ -246,14 +246,14 @@ class Person:
 
 Defining these classes manually would be tedious work. Fortunately, *pylinsql* comes with a code generator utility that scans table schema definitions in a database, and writes corresponding Python code:
 ```shell
-$ python3 -m pylinsql.code_generator example.py --schema public
+$ python3 -m pylinsql.generator.code_generator example.py --schema public
 ```
 
 The generated code takes into account type mappings, nullable types, table references and even table and column comments.
 
 Use the switch `--help` to learn more:
 ```shell
-$ python3 -m pylinsql.code_generator --help
+$ python3 -m pylinsql.generator.code_generator --help
 ```
 
 
