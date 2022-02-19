@@ -10,7 +10,7 @@ import os.path
 import sys
 from dataclasses import dataclass
 from types import CodeType
-from typing import Generator, List, Type
+from typing import Generator, List
 
 from .base import DataClass, T
 from .builder import Context, QueryBuilder, QueryBuilderArgs
@@ -18,7 +18,7 @@ from .core import EntityProxy, Query
 from .decompiler import CodeExpression, CodeExpressionAnalyzer
 
 
-def get_entity_types(sql_generator_expr: Generator) -> List[Type]:
+def get_entity_types(sql_generator_expr: Generator) -> List[type]:
     if not inspect.isgenerator(sql_generator_expr):
         raise TypeError(
             f"expected a SQL generator expression but got: {type(sql_generator_expr)}"

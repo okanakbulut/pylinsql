@@ -618,7 +618,7 @@ class Context:
 class _SelectExtractor:
     _query_visitor: _QueryVisitor
 
-    return_type: Type = None
+    return_type: type = None
     local_vars: List[str]
     select: List[str]
     group_by: List[str]

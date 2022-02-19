@@ -3,9 +3,23 @@ Metadata attached to fields in a data class definition.
 """
 
 from dataclasses import dataclass
-from typing import List, Union
+from typing import Dict, List, TypeVar, Union
+
+try:
+    from typing import Protocol
+except ImportError:
+    from typing_extensions import Protocol
 
 from strong_typing.auxiliary import CompactDataClass
+
+
+T = TypeVar("T")
+
+
+class DataClass(Protocol[T]):
+    "Identifies a type as a dataclass type."
+
+    __dataclass_fields__: Dict
 
 
 @dataclass(frozen=True, repr=False)

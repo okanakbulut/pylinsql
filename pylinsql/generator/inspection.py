@@ -3,14 +3,14 @@ import inspect
 import linecache
 import re
 import types
-from typing import Dict, List, Type
+from typing import Dict, List
 
 from strong_typing.inspection import is_dataclass_type, is_type_enum
 
 from .schema import DiscriminatedKey, ForeignKey, Reference
 
 
-def classes_in_module_source_file(module: types.ModuleType) -> Dict[str, int]:
+def _classes_in_source(module: types.ModuleType) -> Dict[str, int]:
     "Retrieve a dictionary of key/value pairs mapping class names in a module to source code line numbers."
 
     file = inspect.getsourcefile(module)
@@ -33,7 +33,13 @@ def classes_in_module_source_file(module: types.ModuleType) -> Dict[str, int]:
     return result
 
 
-def entity_classes(module: types.ModuleType) -> Dict[str, Type]:
+def _sort_classes_by_lineno(module: types.ModuleType, classes: List[type]) -> None:
+    # keep the order of classes as they are defined in the source file
+    class_lineno = _classes_in_source(module)
+    classes.sort(key=lambda cls: class_lineno.get(cls.__name__, 0))
+
+
+def entity_classes(module: types.ModuleType) -> Dict[str, type]:
     if not inspect.ismodule(module):
         raise TypeError(f"expected Python module but got: {module}")
 
@@ -47,15 +53,12 @@ def entity_classes(module: types.ModuleType) -> Dict[str, Type]:
         )
     ]
 
-    # keep the order of classes as they are defined in the source file
-    class_lineno = classes_in_module_source_file(module)
-    classes.sort(key=lambda cls: class_lineno.get(cls.__name__, 0))
-
+    _sort_classes_by_lineno(module, classes)
     return {cls.__name__: cls for cls in classes}
 
 
 class _KeyValidator:
-    entities: Dict[str, Type]
+    entities: Dict[str, type]
     field_names: Dict[str, List[str]]
 
     def __init__(self, module: types.ModuleType, verbose: bool = True) -> None:

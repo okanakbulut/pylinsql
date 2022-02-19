@@ -9,23 +9,20 @@ import logging
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import (
-    Any,
     AsyncIterator,
     ClassVar,
     Dict,
     Generator,
-    Iterable,
     List,
     Optional,
     Type,
     TypeVar,
-    Union,
 )
 
 import asyncpg
 
 from .connection.async_database import BasicConnection, ConnectionParameters
-from .query.base import DataClass, cast_if_not_none, is_dataclass_instance
+from .query.base import DataClass, is_dataclass_instance
 from .query.core import DEFAULT, is_dataclass_type
 from .query.query import insert_or_select, select
 

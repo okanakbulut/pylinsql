@@ -11,12 +11,8 @@ from dataclasses import MISSING, Field, dataclass
 from io import StringIO
 from typing import Any, Dict, List, Optional, TextIO, Tuple, TypeVar
 
-try:
-    from typing import Protocol
-except ImportError:
-    from typing_extensions import Protocol
-
 from strong_typing.auxiliary import python_type_to_str
+from strong_typing.docstring import has_docstring
 from strong_typing.inspection import is_dataclass_type, is_type_enum, is_type_optional
 
 from ..connection.async_database import (
@@ -26,15 +22,9 @@ from ..connection.async_database import (
 )
 from . import schema
 from .conversion import cast_if_not_none, sql_to_python_type
-from .schema import ForeignKey, PrimaryKey, Reference
+from .schema import DataClass, ForeignKey, PrimaryKey, Reference
 
 T = TypeVar("T")
-
-
-class DataClass(Protocol[T]):
-    "Identifies a type as a dataclass type."
-
-    __dataclass_fields__: Dict
 
 
 @dataclass
@@ -482,9 +472,7 @@ def dataclass_to_stream(typ: DataClass, target: TextIO) -> None:
     print(f"class {typ.__name__}:", file=target)
 
     # check if class has a doc-string other than the auto-generated string assigned by @dataclass
-    if typ.__doc__ and not re.match(
-        f"^{re.escape(typ.__name__)}[(].*[)]$", typ.__doc__
-    ):
+    if has_docstring(typ):
         if "\n" in typ.__doc__:
             print('    """', file=target)
             for line in textwrap.dedent(typ.__doc__).lstrip().splitlines():
