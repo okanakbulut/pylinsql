@@ -1,6 +1,6 @@
 import dataclasses
 import types
-from typing import Dict, List, Optional, TextIO, Type, TypeVar
+from typing import Dict, List, Optional, TextIO, TypeVar
 
 from pylinsql.generator.conversion import (
     python_to_sql_type,
@@ -9,18 +9,53 @@ from pylinsql.generator.conversion import (
 )
 from pylinsql.generator.inspection import entity_classes
 from pylinsql.generator.schema import DataClass, ForeignKey, PrimaryKey
-from pylinsql.query.base import is_dataclass_type
+from strong_typing.auxiliary import int16, int32, int64
 from strong_typing.docstring import parse_type
-from strong_typing.inspection import is_type_optional, unwrap_optional_type
+from strong_typing.inspection import (
+    is_dataclass_type,
+    is_type_enum,
+    is_type_optional,
+    unwrap_optional_type,
+)
 
 T = TypeVar("T")
 
 
+def is_composite_type(cls: type) -> bool:
+    "True if the Python class is to be represented as a PostgreSQL composite type."
+
+    return not is_type_enum(cls) and not hasattr(cls, "primary_key")
+
+
+def is_table_type(cls: type) -> bool:
+    "True if the Python class is to be represented as a PostgreSQL table type."
+
+    return hasattr(cls, "primary_key")
+
+
 def module_to_sql_stream(module: types.ModuleType, target: TextIO) -> None:
     classes = entity_classes(module)
-    for cls in classes.values():
-        class_to_sql_stream(cls, target)
-        print("\n\n", file=target)
+
+    enumerations = [cls for cls in classes.values() if is_type_enum(cls)]
+    for cls in enumerations:
+        enum_values = ", ".join(
+            sql_quoted_str(m.value) for m in cls.__members__.values()
+        )
+        print(f"CREATE TYPE {cls.__name__} AS ENUM ({enum_values});", file=target)
+    if enumerations:
+        print(file=target)
+
+    composite_types = [cls for cls in classes.values() if is_composite_type(cls)]
+    for cls in composite_types:
+        SQLConverter(cls).write_type(target)
+    if composite_types:
+        print(file=target)
+
+    converters = [SQLConverter(cls) for cls in classes.values() if is_table_type(cls)]
+    for converter in converters:
+        converter.write_table(target)
+    for converter in converters:
+        converter.write_constraints(target)
 
 
 class ForeignKeyDependencyResolver:
@@ -44,7 +79,7 @@ class ForeignKeyDependencyResolver:
 
 
 def class_to_sql_stream(cls: DataClass[T], target: TextIO) -> None:
-    SQLConverter(cls).write(target)
+    SQLConverter(cls).write_table(target)
 
 
 def _get_primary_key(cls: type) -> Optional[PrimaryKey]:
@@ -54,7 +89,10 @@ def _get_primary_key(cls: type) -> Optional[PrimaryKey]:
 
 def _get_foreign_key(field: dataclasses.Field) -> Optional[ForeignKey]:
     foreign_key = field.metadata.get("foreign_key")
-    return foreign_key  # perform implicit type cast
+    if isinstance(foreign_key, ForeignKey):
+        return foreign_key  # perform implicit type cast
+    else:
+        return None
 
 
 class SQLConverter:
@@ -73,12 +111,54 @@ class SQLConverter:
 
         return None
 
-    def write(self, target: TextIO) -> None:
-        defs: List[str] = []
-        comments: List[str] = []
-        constraints: List[str] = []
-
+    def write_comments(self, sql_object_type: str, target: TextIO) -> None:
         class_sql_name = sql_quoted_id(self.cls.__name__)
+        comments: List[str] = []
+
+        for field in dataclasses.fields(self.cls):
+            description = self._get_field_description(field)
+            if description is not None:
+                comments.append(
+                    f"COMMENT ON COLUMN {class_sql_name}.{sql_quoted_id(field.name)} IS {sql_quoted_str(description)};"
+                )
+
+        description = self.docs.full_description
+        if description is not None:
+            print(
+                f"COMMENT ON {sql_object_type} {class_sql_name} IS {sql_quoted_str(description)};",
+                file=target,
+            )
+        for comment in comments:
+            print(comment, file=target)
+        if comments:
+            print(file=target)
+
+    def write_type(self, target: TextIO) -> None:
+        class_sql_name = sql_quoted_id(self.cls.__name__)
+        defs: List[str] = []
+
+        for field in dataclasses.fields(self.cls):
+            field_sql_name = sql_quoted_id(field.name)
+
+            # no constraints allowed on composite types (including NOT NULL)
+            if is_type_optional(field.type):
+                sql_type = python_to_sql_type(unwrap_optional_type(field.type))
+            else:
+                sql_inner_type = python_to_sql_type(field.type)
+                sql_type = f"{sql_inner_type}"
+            defs.append(f"{field_sql_name} {sql_type}")
+
+        print(f"CREATE TYPE {class_sql_name} AS (", file=target)
+        print(",\n".join(defs), file=target)
+        print(f");\n", file=target)
+
+        self.write_comments("TYPE", target)
+
+    def write_table(self, target: TextIO) -> None:
+        class_sql_name = sql_quoted_id(self.cls.__name__)
+
+        defs: List[str] = []
+        constraints: List[str] = []
 
         primary_key_column = None
         primary_key = _get_primary_key(self.cls)
@@ -98,7 +178,10 @@ class SQLConverter:
 
             if field.name == primary_key_column:
                 sql_inner_type = python_to_sql_type(field.type)
-                sql_type = f"{sql_inner_type} GENERATED BY DEFAULT AS IDENTITY"
+                if field.type is int16 or field.type is int32 or field.type is int64:
+                    sql_type = f"{sql_inner_type} GENERATED BY DEFAULT AS IDENTITY"
+                else:
+                    sql_type = sql_inner_type
             elif is_type_optional(field.type):
                 sql_type = python_to_sql_type(unwrap_optional_type(field.type))
             else:
@@ -106,31 +189,30 @@ class SQLConverter:
                 sql_type = f"{sql_inner_type} NOT NULL"
             defs.append(f"{field_sql_name} {sql_type}")
 
-            description = self._get_field_description(field)
-            if description is not None:
-                comments.append(
-                    f"COMMENT ON COLUMN {class_sql_name}.{field_sql_name} IS {sql_quoted_str(description)};"
-                )
+        defs.extend(constraints)
+        print(f"CREATE TABLE {class_sql_name}(", file=target)
+        print(",\n".join(defs), file=target)
+        print(f");\n", file=target)
+
+        self.write_comments("TABLE", target)
+
+    def write_constraints(self, target: TextIO) -> None:
+        class_sql_name = sql_quoted_id(self.cls.__name__)
+
+        constraints: List[str] = []
+        for field in dataclasses.fields(self.cls):
+            field_sql_name = sql_quoted_id(field.name)
 
             foreign_key = _get_foreign_key(field)
-            if foreign_key is not None:
+            if foreign_key:
                 fk_sql_name = sql_quoted_id(foreign_key.name)
                 pk_sql_table = sql_quoted_id(foreign_key.references.table)
                 pk_sql_column = sql_quoted_id(foreign_key.references.column)
                 constraints.append(
-                    f"CONSTRAINT {fk_sql_name} FOREIGN KEY ({field_sql_name}) REFERENCES {pk_sql_table}({pk_sql_column})"
+                    f"ADD CONSTRAINT {fk_sql_name} FOREIGN KEY ({field_sql_name}) REFERENCES {pk_sql_table}({pk_sql_column})"
                 )
 
-        defs.extend(constraints)
-        print(f"CREATE TABLE {class_sql_name}(", file=target)
-        print(",\n".join(defs), file=target)
-        print(f");", file=target)
-
-        description = self.docs.full_description
-        if description is not None:
-            print(
-                f"COMMENT ON TABLE {class_sql_name} IS {sql_quoted_str(description)};",
-                file=target,
-            )
-        for comment in comments:
-            print(comment, file=target)
+        if constraints:
+            print(f"ALTER TABLE {class_sql_name}", file=target)
+            print(",\n".join(constraints), file=target)
+            print(f";\n", file=target)

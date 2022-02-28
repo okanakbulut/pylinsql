@@ -1,10 +1,10 @@
-from dataclasses import dataclass
 import datetime
 import decimal
 import logging
 import re
 import typing
 import uuid
+from dataclasses import dataclass
 from typing import Any, List, Optional, Type, TypeVar
 
 from strong_typing.auxiliary import (
@@ -13,6 +13,7 @@ from strong_typing.auxiliary import (
     Precision,
     SpecialConversion,
     Storage,
+    TimePrecision,
     float32,
     float64,
     int16,
@@ -65,20 +66,27 @@ def sql_quoted_str(text: str) -> str:
         return f"'{string}'"
 
 
+class SqlDataType:
+    def _unrecognized_meta(self, meta: Any) -> None:
+        logging.warning(
+            "unrecognized Python type annotation for %s: %s",
+            type(self).__name__,
+            repr(meta),
+        )
+
+
 @dataclass
-class SqlCharacterType:
+class SqlCharacterType(SqlDataType):
     max_len: int = None
 
     def __init__(self, metadata):
-        for m in metadata:
-            if isinstance(m, MaxLength):
-                self.max_len = m.value
-            elif isinstance(m, SpecialConversion):
+        for meta in metadata:
+            if isinstance(meta, MaxLength):
+                self.max_len = meta.value
+            elif isinstance(meta, SpecialConversion):
                 pass
             else:
-                logging.warning(
-                    "unrecognized Python type annotation for %s: %s", type(self), m
-                )
+                self._unrecognized_meta(meta)
 
     def __str__(self) -> str:
         if self.max_len is not None:
@@ -88,19 +96,17 @@ class SqlCharacterType:
 
 
 @dataclass
-class SqlDecimalType:
+class SqlDecimalType(SqlDataType):
     precision: int = None
     scale: int = None
 
     def __init__(self, metadata):
-        for m in metadata:
-            if isinstance(m, Precision):
-                self.precision = m.significant_digits
-                self.scale = m.decimal_digits
+        for meta in metadata:
+            if isinstance(meta, Precision):
+                self.precision = meta.significant_digits
+                self.scale = meta.decimal_digits
             else:
-                logging.warning(
-                    "unrecognized Python type annotation for %s: %s", type(self), m
-                )
+                self._unrecognized_meta(meta)
 
     def __str__(self) -> str:
         if self.precision is not None and self.scale is not None:
@@ -109,6 +115,42 @@ class SqlDecimalType:
             return f"decimal({self.precision})"
         else:
             return "decimal"
+
+
+@dataclass
+class SqlTimestampType(SqlDataType):
+    precision: int = None
+
+    def __init__(self, metadata):
+        for meta in metadata:
+            if isinstance(meta, TimePrecision):
+                self.precision = meta.decimal_digits
+            else:
+                self._unrecognized_meta(meta)
+
+    def __str__(self) -> str:
+        if self.precision is not None:
+            return f"timestamp({self.precision})"
+        else:
+            return "timestamp"
+
+
+@dataclass
+class SqlTimeType(SqlDataType):
+    precision: int = None
+
+    def __init__(self, metadata):
+        for meta in metadata:
+            if isinstance(meta, TimePrecision):
+                self.precision = meta.decimal_digits
+            else:
+                self._unrecognized_meta(meta)
+
+    def __str__(self) -> str:
+        if self.precision is not None:
+            return f"time({self.precision})"
+        else:
+            return "time"
 
 
 def sql_to_python_type(sql_type: str) -> type:
@@ -166,12 +208,12 @@ def sql_to_python_type(sql_type: str) -> type:
     m = re.match(r"^time[(](\d+)[)](?: with(?:out)? time zone)?$", sql_type)
     if m is not None:
         precision = int(m.group(1))
-        return Annotated[datetime.time, Precision(precision)]
+        return Annotated[datetime.time, TimePrecision(precision)]
 
     m = re.match(r"^timestamp[(](\d+)[)](?: with(?:out)? time zone)?$", sql_type)
     if m is not None:
         precision = int(m.group(1))
-        return Annotated[datetime.datetime, Precision(precision)]
+        return Annotated[datetime.datetime, TimePrecision(precision)]
 
     raise NotImplementedError(f"unrecognized database type: {sql_type}")
 
@@ -215,6 +257,10 @@ def python_to_sql_type(typ: type) -> str:
             return str(SqlCharacterType(metadata))
         elif inner_type is decimal.Decimal:
             return str(SqlDecimalType(metadata))
+        elif inner_type is datetime.datetime:
+            return str(SqlTimestampType(metadata))
+        elif inner_type is datetime.time:
+            return str(SqlTimeType(metadata))
         else:
             logging.warning("cannot map annotated Python type: %s", typ)
             return python_to_sql_type(inner_type)
