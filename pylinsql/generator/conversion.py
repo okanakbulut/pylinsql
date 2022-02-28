@@ -1,6 +1,9 @@
+from dataclasses import dataclass
 import datetime
 import decimal
+import logging
 import re
+import typing
 import uuid
 from typing import Any, List, Optional, Type, TypeVar
 
@@ -8,6 +11,7 @@ from strong_typing.auxiliary import (
     Annotated,
     MaxLength,
     Precision,
+    SpecialConversion,
     Storage,
     float32,
     float64,
@@ -15,7 +19,12 @@ from strong_typing.auxiliary import (
     int32,
     int64,
 )
-from strong_typing.inspection import is_generic_list, unwrap_generic_list
+from strong_typing.inspection import (
+    is_dataclass_type,
+    is_generic_list,
+    is_type_enum,
+    unwrap_generic_list,
+)
 
 T = TypeVar("T")
 
@@ -54,6 +63,52 @@ def sql_quoted_str(text: str) -> str:
     else:
         string = text.replace("'", "''")
         return f"'{string}'"
+
+
+@dataclass
+class SqlCharacterType:
+    max_len: int = None
+
+    def __init__(self, metadata):
+        for m in metadata:
+            if isinstance(m, MaxLength):
+                self.max_len = m.value
+            elif isinstance(m, SpecialConversion):
+                pass
+            else:
+                logging.warning(
+                    "unrecognized Python type annotation for %s: %s", type(self), m
+                )
+
+    def __str__(self) -> str:
+        if self.max_len is not None:
+            return f"character varying({self.max_len})"
+        else:
+            return "character varying"
+
+
+@dataclass
+class SqlDecimalType:
+    precision: int = None
+    scale: int = None
+
+    def __init__(self, metadata):
+        for m in metadata:
+            if isinstance(m, Precision):
+                self.precision = m.significant_digits
+                self.scale = m.decimal_digits
+            else:
+                logging.warning(
+                    "unrecognized Python type annotation for %s: %s", type(self), m
+                )
+
+    def __str__(self) -> str:
+        if self.precision is not None and self.scale is not None:
+            return f"decimal({self.precision}, {self.scale})"
+        elif self.precision is not None:
+            return f"decimal({self.precision})"
+        else:
+            return "decimal"
 
 
 def sql_to_python_type(sql_type: str) -> type:
@@ -151,8 +206,26 @@ def python_to_sql_type(typ: type) -> str:
     if typ is uuid.UUID:
         return "uuid"
 
+    metadata = getattr(typ, "__metadata__", None)
+    if metadata is not None:
+        # type is Annotated[T, ...]
+        inner_type = typing.get_args(typ)[0]
+
+        if inner_type is str:
+            return str(SqlCharacterType(metadata))
+        elif inner_type is decimal.Decimal:
+            return str(SqlDecimalType(metadata))
+        else:
+            logging.warning("cannot map annotated Python type: %s", typ)
+            return python_to_sql_type(inner_type)
+
+    if is_type_enum(typ):
+        return typ.__name__
+    if is_dataclass_type(typ):
+        return typ.__name__
+
     if is_generic_list(typ):
         inner_type = python_to_sql_type(unwrap_generic_list(typ))
         return f"{inner_type}[]"
 
-    raise NotImplementedError(f"unmappable Python type: {repr(typ)}")
+    raise NotImplementedError(f"cannot map Python type: {repr(typ)}")
