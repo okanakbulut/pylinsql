@@ -9,7 +9,7 @@ import sys
 import textwrap
 from dataclasses import MISSING, Field, dataclass
 from io import StringIO
-from typing import Any, Dict, List, Optional, TextIO, Tuple, TypeVar
+from typing import Any, Dict, List, Optional, TextIO, Tuple, Type, TypeVar
 
 from strong_typing.auxiliary import python_type_to_str
 from strong_typing.docstring import has_docstring
@@ -402,7 +402,9 @@ def column_to_field(
     )
 
 
-def table_to_dataclass(table: TableSchema, optional_default: bool = True) -> DataClass:
+def table_to_dataclass(
+    table: TableSchema, optional_default: bool = True
+) -> Type[DataClass]:
     """
     Generates a dataclass type corresponding to a table schema.
 
@@ -444,7 +446,7 @@ def table_to_dataclass(table: TableSchema, optional_default: bool = True) -> Dat
     return typ
 
 
-def catalog_to_dataclasses(catalog: CatalogSchema) -> List[DataClass]:
+def catalog_to_dataclasses(catalog: CatalogSchema) -> List[Type[DataClass]]:
     "Generates a list of dataclass types corresponding to a catalog schema."
 
     return [table_to_dataclass(table) for table in catalog.tables.values()]
@@ -464,7 +466,7 @@ def _header_to_stream(target: TextIO) -> None:
     print(file=target)
 
 
-def dataclass_to_stream(typ: DataClass, target: TextIO) -> None:
+def dataclass_to_stream(typ: Type[DataClass], target: TextIO) -> None:
     "Generates Python code corresponding to a dataclass type."
 
     print(file=target)
@@ -510,19 +512,30 @@ def dataclass_to_stream(typ: DataClass, target: TextIO) -> None:
         type_name = python_type_to_str(field.type)
         metadata = dict(field.metadata)
         metadata.pop("description", None)
-        if field.default is not MISSING and metadata:
-            initializer = f" = field(default = {repr(field.default)}, metadata = {repr(metadata)})"
-        elif metadata:
-            initializer = f" = field(metadata = {repr(metadata)})"
-        elif field.default is not MISSING:
+
+        field_initializer: Dict[str, str] = {}
+        if field.default is not MISSING:
+            field_initializer["default"] = repr(field.default)
+        if field.default_factory is not MISSING:
+            field_initializer["default_factory"] = field.default_factory.__name__
+        if metadata:
+            field_initializer["metadata"] = repr(metadata)
+
+        if not field_initializer:
+            initializer = ""
+        elif field.default is not MISSING and len(field_initializer) == 1:
             initializer = f" = {repr(field.default)}"
         else:
-            initializer = ""
+            initializer_list = ", ".join(
+                f"{key} = {value}" for key, value in field_initializer.items()
+            )
+            initializer = f" = field({initializer_list})"
+
         print(f"    {field.name}: {type_name}{initializer}", file=target)
     print(file=target)
 
 
-def dataclasses_to_stream(types: List[DataClass], target: TextIO) -> None:
+def dataclasses_to_stream(types: List[Type[DataClass]], target: TextIO) -> None:
     "Generates Python code corresponding to a set of dataclass types."
 
     _header_to_stream(target)
@@ -530,7 +543,7 @@ def dataclasses_to_stream(types: List[DataClass], target: TextIO) -> None:
         dataclass_to_stream(typ, target)
 
 
-def dataclasses_to_code(types: List[DataClass]) -> str:
+def dataclasses_to_code(types: List[Type[DataClass]]) -> str:
     f = io.StringIO()
     dataclasses_to_stream(types, f)
     return f.getvalue()
@@ -551,7 +564,7 @@ class EnumField:
     description: Optional[str] = None
 
 
-def enum_class_to_stream(enum_class: enum.Enum, target: TextIO) -> None:
+def enum_class_to_stream(enum_class: Type[enum.Enum], target: TextIO) -> None:
     "Writes an enumeration class as a class definition."
 
     print("@enum.unique", file=target)
@@ -576,7 +589,7 @@ def enum_class_to_stream(enum_class: enum.Enum, target: TextIO) -> None:
     print(file=target)
 
 
-def enum_class_to_code(enum_class: enum.Enum) -> str:
+def enum_class_to_code(enum_class: Type[enum.Enum]) -> str:
     "Returns an enumeration class as a class definition string."
 
     with StringIO() as out:
@@ -611,7 +624,7 @@ def enum_to_class(
     return enum_class
 
 
-def classes_to_stream(types: List[DataClass], target: TextIO) -> None:
+def classes_to_stream(types: List[type], target: TextIO) -> None:
     "Generates Python code corresponding to a set of enum class and dataclass types."
 
     _header_to_stream(target)

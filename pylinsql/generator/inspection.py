@@ -3,7 +3,7 @@ import inspect
 import linecache
 import re
 import types
-from typing import Dict, List
+from typing import Dict, List, Set
 
 from strong_typing.inspection import is_dataclass_type, is_type_enum
 
@@ -60,6 +60,8 @@ def entity_classes(module: types.ModuleType) -> Dict[str, type]:
 class _KeyValidator:
     entities: Dict[str, type]
     field_names: Dict[str, List[str]]
+    key_names: Set[str]
+    verbose: bool
 
     def __init__(self, module: types.ModuleType, verbose: bool = True) -> None:
         self.entities = entity_classes(module)
@@ -68,7 +70,16 @@ class _KeyValidator:
             for class_name, class_type in self.entities.items()
             if dataclasses.is_dataclass(class_type)
         }
+        self.key_names = set()
         self.verbose = verbose
+
+    def _validate_unique(self, key_name: str) -> bool:
+        if key_name in self.key_names:
+            print(f"{key_name} is not unique")
+            return False
+        else:
+            self.key_names.add(key_name)
+            return True
 
     def _validate_reference(self, key_name: str, reference: Reference) -> bool:
         if reference.table not in self.entities:
@@ -98,6 +109,10 @@ class _KeyValidator:
 
                 if isinstance(data, ForeignKey):
                     f_key: ForeignKey = data
+
+                    if not self._validate_unique(f_key.name):
+                        result = False
+
                     if not self._validate_reference(
                         f"foreign key {f_key.name}", f_key.references
                     ):
@@ -105,6 +120,10 @@ class _KeyValidator:
 
                 elif isinstance(data, DiscriminatedKey):
                     d_key: DiscriminatedKey = data
+
+                    if not self._validate_unique(d_key.name):
+                        result = False
+
                     for ref in d_key.references:
                         if not self._validate_reference(
                             f"discriminated key {d_key.name}", ref
