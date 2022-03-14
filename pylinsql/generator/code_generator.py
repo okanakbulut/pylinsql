@@ -12,7 +12,7 @@ from io import StringIO
 from typing import Any, Dict, List, Optional, TextIO, Tuple, Type, TypeVar
 
 from strong_typing.auxiliary import python_type_to_str
-from strong_typing.docstring import has_docstring
+from strong_typing.docstring import has_docstring, parse_type
 from strong_typing.inspection import is_dataclass_type, is_type_enum, is_type_optional
 
 from ..connection.async_database import (
@@ -466,6 +466,22 @@ def _header_to_stream(target: TextIO) -> None:
     print(file=target)
 
 
+def _wrap_print(str, file: TextIO) -> None:
+    if not str:
+        return
+
+    # wrap long lines
+    for line in textwrap.wrap(
+        str,
+        width=139,
+        initial_indent="    ",
+        subsequent_indent="    ",
+        break_long_words=False,
+        break_on_hyphens=False,
+    ):
+        print(line, file=file)
+
+
 def dataclass_to_stream(typ: Type[DataClass], target: TextIO) -> None:
     "Generates Python code corresponding to a dataclass type."
 
@@ -476,20 +492,23 @@ def dataclass_to_stream(typ: Type[DataClass], target: TextIO) -> None:
     # check if class has a doc-string other than the auto-generated string assigned by @dataclass
     if has_docstring(typ):
         if "\n" in typ.__doc__:
+            ds = parse_type(typ)
             print('    """', file=target)
-            for line in textwrap.dedent(typ.__doc__).lstrip().splitlines():
-                if not line:
-                    # keep empty lines
+
+            if ds.short_description:
+                _wrap_print(ds.short_description, file=target)
+                if ds.long_description:
                     print(file=target)
-                else:
-                    # wrap long lines
-                    for wrapline in textwrap.wrap(
-                        line,
-                        width=119,
-                        initial_indent="    ",
-                        subsequent_indent="    ",
-                    ):
-                        print(wrapline, file=target)
+                    _wrap_print(ds.long_description, file=target)
+
+            if ds.short_description and (ds.params or ds.returns):
+                print(file=target)
+
+            for name, param in ds.params.items():
+                _wrap_print(f":param {name}: {param.description}", file=target)
+            if ds.returns:
+                _wrap_print(f":returns: {ds.returns.description}", file=target)
+
             print('    """', file=target)
         else:
             print(f"    {repr(typ.__doc__)}", file=target)
