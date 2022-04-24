@@ -8,9 +8,13 @@ from strong_typing.auxiliary import (
     int16,
     int32,
     int64,
-    python_type_to_str,
 )
-from typing_extensions import Annotated
+from strong_typing.name import python_type_to_str
+
+try:
+    from typing import Annotated
+except ImportError:
+    from typing_extensions import Annotated
 
 
 class TestConversion(unittest.TestCase):

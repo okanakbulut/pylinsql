@@ -11,9 +11,9 @@ from dataclasses import MISSING, Field, dataclass
 from io import StringIO
 from typing import Any, Dict, List, Optional, TextIO, Tuple, Type, TypeVar
 
-from strong_typing.auxiliary import python_type_to_str
 from strong_typing.docstring import has_docstring, parse_type
 from strong_typing.inspection import is_dataclass_type, is_type_enum, is_type_optional
+from strong_typing.name import python_type_to_str
 
 from ..connection.async_database import (
     BasicConnection,
