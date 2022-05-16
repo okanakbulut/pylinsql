@@ -1,3 +1,7 @@
+"""
+Provides information on database classes defined in a Python module.
+"""
+
 import dataclasses
 import inspect
 import linecache

@@ -78,8 +78,9 @@ class SqlDataType:
 @dataclass
 class SqlCharacterType(SqlDataType):
     max_len: int = None
+    compact: bool = False
 
-    def __init__(self, metadata):
+    def __init__(self, metadata, compact: bool = False):
         for meta in metadata:
             if isinstance(meta, MaxLength):
                 self.max_len = meta.value
@@ -87,12 +88,14 @@ class SqlCharacterType(SqlDataType):
                 pass
             else:
                 self._unrecognized_meta(meta)
+        self.compact = compact
 
     def __str__(self) -> str:
+        type_name = "varchar" if self.compact else "character varying"
         if self.max_len is not None:
-            return f"character varying({self.max_len})"
+            return f"{type_name}({self.max_len})"
         else:
-            return "character varying"
+            return type_name
 
 
 @dataclass
@@ -218,7 +221,7 @@ def sql_to_python_type(sql_type: str) -> type:
     raise NotImplementedError(f"unrecognized database type: {sql_type}")
 
 
-def python_to_sql_type(typ: type) -> str:
+def python_to_sql_type(typ: type, compact: bool = False) -> str:
     "Maps a native Python type to a PostgreSQL type."
 
     if typ is bool:
@@ -232,7 +235,10 @@ def python_to_sql_type(typ: type) -> str:
     if typ is float32:
         return "real"
     if typ is float64 or typ is float:
-        return "double precision"
+        if compact:
+            return "double"
+        else:
+            return "double precision"
     if typ is str:
         return "text"
     if typ is decimal.Decimal:
@@ -254,7 +260,7 @@ def python_to_sql_type(typ: type) -> str:
         inner_type = typing.get_args(typ)[0]
 
         if inner_type is str:
-            return str(SqlCharacterType(metadata))
+            return str(SqlCharacterType(metadata, compact=compact))
         elif inner_type is decimal.Decimal:
             return str(SqlDecimalType(metadata))
         elif inner_type is datetime.datetime:

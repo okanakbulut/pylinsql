@@ -1,3 +1,7 @@
+"""
+Generates SQL DDL commands from a Python module definition.
+"""
+
 import dataclasses
 import types
 from typing import Dict, List, Optional, TextIO, TypeVar
@@ -7,8 +11,14 @@ from pylinsql.generator.conversion import (
     sql_quoted_id,
     sql_quoted_str,
 )
+from pylinsql.generator.database_traits import (
+    get_foreign_key,
+    get_primary_key,
+    is_composite_type,
+    is_table_type,
+)
 from pylinsql.generator.inspection import entity_classes
-from pylinsql.generator.schema import DataClass, ForeignKey, PrimaryKey
+from pylinsql.generator.schema import DataClass
 from strong_typing.auxiliary import int16, int32, int64
 from strong_typing.docstring import parse_type
 from strong_typing.inspection import (
@@ -19,18 +29,6 @@ from strong_typing.inspection import (
 )
 
 T = TypeVar("T")
-
-
-def is_composite_type(cls: type) -> bool:
-    "True if the Python class is to be represented as a PostgreSQL composite type."
-
-    return not is_type_enum(cls) and not hasattr(cls, "primary_key")
-
-
-def is_table_type(cls: type) -> bool:
-    "True if the Python class is to be represented as a PostgreSQL table type."
-
-    return hasattr(cls, "primary_key")
 
 
 def module_to_sql_stream(module: types.ModuleType, target: TextIO) -> None:
@@ -69,7 +67,7 @@ class ForeignKeyDependencyResolver:
 
         if is_dataclass_type(cls):
             for field in dataclasses.fields(cls):
-                foreign_key = _get_foreign_key(field)
+                foreign_key = get_foreign_key(field)
                 if foreign_key is not None:
                     typ = self.classes.get(foreign_key.references.table)
                     if typ is not None:
@@ -80,19 +78,6 @@ class ForeignKeyDependencyResolver:
 
 def class_to_sql_stream(cls: DataClass[T], target: TextIO) -> None:
     SQLConverter(cls).write_table(target)
-
-
-def _get_primary_key(cls: type) -> Optional[PrimaryKey]:
-    primary_key = getattr(cls, "primary_key", None)
-    return primary_key  # perform implicit type cast
-
-
-def _get_foreign_key(field: dataclasses.Field) -> Optional[ForeignKey]:
-    foreign_key = field.metadata.get("foreign_key")
-    if isinstance(foreign_key, ForeignKey):
-        return foreign_key  # perform implicit type cast
-    else:
-        return None
 
 
 class SQLConverter:
@@ -161,7 +146,7 @@ class SQLConverter:
         constraints: List[str] = []
 
         primary_key_column = None
-        primary_key = _get_primary_key(self.cls)
+        primary_key = get_primary_key(self.cls)
         if primary_key is not None:
             if isinstance(primary_key.column, str):
                 column_list = sql_quoted_id(primary_key.column)
@@ -203,7 +188,7 @@ class SQLConverter:
         for field in dataclasses.fields(self.cls):
             field_sql_name = sql_quoted_id(field.name)
 
-            foreign_key = _get_foreign_key(field)
+            foreign_key = get_foreign_key(field)
             if foreign_key:
                 fk_sql_name = sql_quoted_id(foreign_key.name)
                 pk_sql_table = sql_quoted_id(foreign_key.references.table)
