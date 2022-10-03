@@ -5,7 +5,7 @@ import re
 import typing
 import uuid
 from dataclasses import dataclass
-from typing import Any, List, Optional, Type, TypeVar
+from typing import Any, List, Optional, Tuple, Type, TypeVar
 
 from strong_typing.auxiliary import (
     Annotated,
@@ -24,7 +24,11 @@ from strong_typing.inspection import (
     is_dataclass_type,
     is_generic_list,
     is_type_enum,
+    is_type_literal,
+    is_type_union,
     unwrap_generic_list,
+    unwrap_literal_types,
+    unwrap_union_types,
 )
 
 T = TypeVar("T")
@@ -269,7 +273,7 @@ def python_to_sql_type(typ: type, compact: bool = False) -> str:
             return str(SqlTimeType(metadata))
         else:
             logging.warning("cannot map annotated Python type: %s", typ)
-            return python_to_sql_type(inner_type)
+            return python_to_sql_type(inner_type, compact=compact)
 
     if is_type_enum(typ):
         return typ.__name__
@@ -277,7 +281,20 @@ def python_to_sql_type(typ: type, compact: bool = False) -> str:
         return typ.__name__
 
     if is_generic_list(typ):
-        inner_type = python_to_sql_type(unwrap_generic_list(typ))
-        return f"{inner_type}[]"
+        list_item_type = python_to_sql_type(unwrap_generic_list(typ), compact=compact)
+        return f"{list_item_type}[]"
+    elif is_type_literal(typ):
+        return _get_common_sql_type(unwrap_literal_types(typ), compact=compact)
+    elif is_type_union(typ):
+        return _get_common_sql_type(unwrap_union_types(typ), compact=compact)
 
     raise NotImplementedError(f"cannot map Python type: {repr(typ)}")
+
+
+def _get_common_sql_type(data_types: Tuple[type], compact: bool = False) -> str:
+    sql_types = set(python_to_sql_type(t, compact=compact) for t in data_types)
+    if len(sql_types) != 1:
+        raise NotImplementedError(
+            f"cannot map union of incompatible types: {repr(data_types)}"
+        )
+    return sql_types.pop()

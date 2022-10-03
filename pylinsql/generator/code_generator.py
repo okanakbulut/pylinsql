@@ -458,7 +458,7 @@ def _header_to_stream(target: TextIO) -> None:
     print("from dataclasses import dataclass, field", file=target)
     print("from datetime import date, datetime, time, timedelta", file=target)
     print("from decimal import Decimal", file=target)
-    print("from typing import Optional", file=target)
+    print("from typing import Literal, Optional, Union", file=target)
     print("from uuid import UUID", file=target)
     print(file=target)
     print(f"from {schema.__name__} import *", file=target)
