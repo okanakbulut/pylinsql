@@ -40,7 +40,7 @@ def cast_if_not_none(typ: Type[T], value: Optional[Any]) -> Optional[T]:
     if value is None:
         return None
     else:
-        return typ(value)
+        return typ(value)  # type: ignore
 
 
 def sql_quoted_id(name: str) -> str:
@@ -81,7 +81,7 @@ class SqlDataType:
 
 @dataclass
 class SqlCharacterType(SqlDataType):
-    max_len: int = None
+    max_len: Optional[int] = None
     compact: bool = False
 
     def __init__(self, metadata, compact: bool = False):
@@ -104,8 +104,8 @@ class SqlCharacterType(SqlDataType):
 
 @dataclass
 class SqlDecimalType(SqlDataType):
-    precision: int = None
-    scale: int = None
+    precision: Optional[int] = None
+    scale: Optional[int] = None
 
     def __init__(self, metadata):
         for meta in metadata:
@@ -126,7 +126,7 @@ class SqlDecimalType(SqlDataType):
 
 @dataclass
 class SqlTimestampType(SqlDataType):
-    precision: int = None
+    precision: Optional[int] = None
 
     def __init__(self, metadata):
         for meta in metadata:
@@ -144,7 +144,7 @@ class SqlTimestampType(SqlDataType):
 
 @dataclass
 class SqlTimeType(SqlDataType):
-    precision: int = None
+    precision: Optional[int] = None
 
     def __init__(self, metadata):
         for meta in metadata:
@@ -164,7 +164,7 @@ def sql_to_python_type(sql_type: str) -> type:
     "Maps a PostgreSQL type to a native Python type."
 
     if sql_type.endswith("[]"):
-        return List[sql_to_python_type(sql_type[:-2])]
+        return List[sql_to_python_type(sql_type[:-2])]  # type: ignore
 
     sql_type = sql_type.lower()
 
@@ -225,7 +225,7 @@ def sql_to_python_type(sql_type: str) -> type:
     raise NotImplementedError(f"unrecognized database type: {sql_type}")
 
 
-def python_to_sql_type(typ: type, compact: bool = False) -> str:
+def python_to_sql_type(typ: type, compact: bool = False, custom: bool = True) -> str:
     "Maps a native Python type to a PostgreSQL type."
 
     if typ is bool:
@@ -275,10 +275,11 @@ def python_to_sql_type(typ: type, compact: bool = False) -> str:
             logging.warning("cannot map annotated Python type: %s", typ)
             return python_to_sql_type(inner_type, compact=compact)
 
-    if is_type_enum(typ):
-        return typ.__name__
-    if is_dataclass_type(typ):
-        return typ.__name__
+    if custom:
+        if is_type_enum(typ):
+            return typ.__name__
+        if is_dataclass_type(typ):
+            return typ.__name__
 
     if is_generic_list(typ):
         list_item_type = python_to_sql_type(unwrap_generic_list(typ), compact=compact)

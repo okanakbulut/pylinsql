@@ -20,7 +20,7 @@ from pylinsql.generator.database_traits import (
 from pylinsql.generator.inspection import entity_classes
 from pylinsql.generator.schema import DataClass
 from strong_typing.auxiliary import int16, int32, int64
-from strong_typing.docstring import parse_type
+from strong_typing.docstring import Docstring, parse_type
 from strong_typing.inspection import (
     is_dataclass_type,
     is_type_enum,
@@ -81,6 +81,9 @@ def class_to_sql_stream(cls: DataClass[T], target: TextIO) -> None:
 
 
 class SQLConverter:
+    cls: type
+    docs: Docstring
+
     def __init__(self, cls: T):
         self.cls = cls
         self.docs = parse_type(cls)

@@ -18,6 +18,7 @@ from pylinsql.generator.database_traits import (
 from pylinsql.generator.inspection import entity_classes
 from strong_typing.auxiliary import int16, int32, int64
 from strong_typing.inspection import (
+    is_dataclass_type,
     is_type_enum,
     is_type_optional,
     unwrap_optional_type,
@@ -72,8 +73,14 @@ def table_to_stream(cls: type, target: TextIO) -> None:
             settings.append("not null")
 
         # column definition
+        if is_type_enum(field_type) or is_table_type(field_type):
+            python_type = field_type.__name__
+        elif is_dataclass_type(field_type):
+            python_type = "jsonb"
+        else:
+            python_type = python_to_sql_type(field_type, compact=True, custom=False)
+        sql_type = dbml_identifier(python_type)
         field_name = dbml_identifier(field.name)
-        sql_type = dbml_identifier(python_to_sql_type(field_type, compact=True))
         if settings:
             property_list = ", ".join(settings)
             print(f"    {field_name} {sql_type} [{property_list}]", file=target)
