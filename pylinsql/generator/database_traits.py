@@ -1,7 +1,7 @@
 import dataclasses
 from typing import Optional
 
-from pylinsql.generator.schema import ForeignKey, PrimaryKey
+from pylinsql.generator.schema import DiscriminatedKey, ForeignKey, PrimaryKey
 from strong_typing.inspection import is_type_enum
 
 
@@ -26,5 +26,13 @@ def get_foreign_key(field: dataclasses.Field) -> Optional[ForeignKey]:
     foreign_key = field.metadata.get("foreign_key")
     if isinstance(foreign_key, ForeignKey):
         return foreign_key  # perform implicit type cast
+    else:
+        return None
+
+
+def get_discriminated_key(field: dataclasses.Field) -> Optional[DiscriminatedKey]:
+    discriminated_key = field.metadata.get("foreign_key")
+    if isinstance(discriminated_key, DiscriminatedKey):
+        return discriminated_key  # perform implicit type cast
     else:
         return None

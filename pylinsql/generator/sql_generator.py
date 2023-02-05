@@ -12,6 +12,7 @@ from pylinsql.generator.conversion import (
     sql_quoted_str,
 )
 from pylinsql.generator.database_traits import (
+    get_discriminated_key,
     get_foreign_key,
     get_primary_key,
     is_composite_type,
@@ -204,3 +205,15 @@ class SQLConverter:
             print(f"ALTER TABLE {class_sql_name}", file=target)
             print(",\n".join(constraints), file=target)
             print(f";\n", file=target)
+
+        for field in dataclasses.fields(self.cls):
+            field_sql_name = sql_quoted_id(field.name)
+
+            discriminated_key = get_discriminated_key(field)
+            if discriminated_key:
+                dk_sql_name = sql_quoted_id(discriminated_key.name)
+                dk_sql_column = sql_quoted_id(discriminated_key.discriminator)
+                print(
+                    f"CREATE INDEX {dk_sql_name} ON {class_sql_name} ({dk_sql_column}, {field_sql_name});\n",
+                    file=target,
+                )
